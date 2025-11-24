@@ -57,5 +57,3 @@ released under the MIT license
 Maintainer: `rudrakumar07` — email: `rudrakumar25@iitk.ac.in`
 
 ---
-
-If you want, I can create a formatted `README.md` directly at the target repo, add a `LICENSE`, or create a GitHub Release and upload the EXE into its assets. Tell me which you'd prefer next.
