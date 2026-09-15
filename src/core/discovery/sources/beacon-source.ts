@@ -17,6 +17,12 @@ interface BeaconPayload {
   fp: string;
 }
 
+interface PingPayload {
+  type: 'ping' | 'pong';
+  from: string;
+  nonce: string;
+}
+
 export interface BeaconSourceDeps {
   udp: UdpTransport;
   interfaces: InterfaceProvider;
@@ -25,10 +31,12 @@ export interface BeaconSourceDeps {
   logger: Logger;
   transferPort: () => number;
   ignoredInterfaces: () => string[];
+  /** Called when a ping/pong message (not a discovery beacon) arrives on the shared socket. */
+  onPingPong?: (msg: PingPayload) => void;
 }
 
 export function createBeaconSource(deps: BeaconSourceDeps): DiscoverySource {
-  const { udp, interfaces, identity, clock, logger, transferPort, ignoredInterfaces } = deps;
+  const { udp, interfaces, identity, clock, logger, transferPort, ignoredInterfaces, onPingPong } = deps;
   const sockets: { close(): void }[] = [];
   let interval: unknown;
 
@@ -73,19 +81,36 @@ export function createBeaconSource(deps: BeaconSourceDeps): DiscoverySource {
             iface: iface.name,
             multicastGroups: [MULTICAST_GROUP],
             onMessage: (msg) => {
-              let parsed: BeaconPayload;
+              let parsed: BeaconPayload | PingPayload;
               try {
                 parsed = JSON.parse(msg.data.toString('utf8'));
               } catch {
                 return;
               }
-              if (!parsed?.id || parsed.id === identity.deviceId) return;
+
+              const asPing = parsed as Partial<PingPayload>;
+              if (asPing.type === 'ping' || asPing.type === 'pong') {
+                if (asPing.from === identity.deviceId) return;
+                if (asPing.type === 'ping') {
+                  const reply = Buffer.from(
+                    JSON.stringify({ type: 'pong', from: identity.deviceId, nonce: asPing.nonce }),
+                    'utf8',
+                  );
+                  void udp.send({ data: reply, address: msg.address, port: BEACON_PORT });
+                } else {
+                  onPingPong?.(asPing as PingPayload);
+                }
+                return;
+              }
+
+              const beacon = parsed as BeaconPayload;
+              if (!beacon?.id || beacon.id === identity.deviceId) return;
               const sighting: Sighting = {
-                deviceId: parsed.id,
-                name: parsed.name,
-                os: (parsed.os as Sighting['os']) ?? 'unknown',
-                fingerprint: parsed.fp,
-                port: parsed.port,
+                deviceId: beacon.id,
+                name: beacon.name,
+                os: (beacon.os as Sighting['os']) ?? 'unknown',
+                fingerprint: beacon.fp,
+                port: beacon.port,
                 address: {
                   address: msg.address,
                   family: msg.address.includes(':') ? 'IPv6' : 'IPv4',

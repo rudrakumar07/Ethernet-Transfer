@@ -9,6 +9,8 @@ import { isOnline } from './logic/presence';
 import { createBeaconSource } from './sources/beacon-source';
 import { createMdnsSource } from './sources/mdns-source';
 import type { DiscoverySource } from './sources/source';
+import { startLatencyProbe } from './latency';
+import { compareAddressPriority } from './logic/link-type';
 
 export interface DiscoveryEvents {
   deviceUp: Device;
@@ -45,6 +47,7 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
   const devices = new Map<DeviceId, Device>();
   let sources: DiscoverySource[] = [];
   let presenceTimer: unknown;
+  let latencyProbe: ReturnType<typeof startLatencyProbe> | undefined;
 
   function shortIdOf(fp: string): string {
     const hex = fp.slice(0, 8).toUpperCase();
@@ -86,6 +89,23 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
     },
 
     async start() {
+      latencyProbe = startLatencyProbe(
+        { udp: deps.udp, clock, identity, logger, onLatency: (deviceId, ms) => {
+          const device = devices.get(deviceId);
+          if (!device) return;
+          device.latencyMs = ms;
+          events.emit('deviceUpdated', device);
+        } },
+        () =>
+          Array.from(devices.values())
+            .filter((d) => !d.manual || d.fingerprint)
+            .map((d) => {
+              const best = [...d.addresses].sort((a, b) => compareAddressPriority(a.linkType, b.linkType))[0];
+              return best ? { deviceId: d.id, address: best.address } : undefined;
+            })
+            .filter((x): x is { deviceId: DeviceId; address: string } => Boolean(x)),
+      );
+
       sources = [
         createBeaconSource({
           udp: deps.udp,
@@ -95,6 +115,7 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
           logger,
           transferPort: deps.transferPort,
           ignoredInterfaces: () => settings.get().ignoredInterfaces,
+          onPingPong: (payload) => latencyProbe?.handlePong(payload),
         }),
         createMdnsSource({
           mdns: deps.mdns,
@@ -125,6 +146,7 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
 
     async stop() {
       if (presenceTimer) clock.clearInterval(presenceTimer);
+      latencyProbe?.stop();
       for (const source of sources) await source.stop();
     },
   };

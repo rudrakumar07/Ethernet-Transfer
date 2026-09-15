@@ -93,15 +93,18 @@ export function createTransferService(deps: TransferDeps): TransferService {
   }
 
   async function handleIncomingConnection(conn: TlsConnection) {
-    const identityResult = await Promise.resolve(true); // fingerprint checked per-transfer below
-    void identityResult;
+    // A connection carries exactly one transfer at a time (one OFFER or
+    // RESUME per connection); this is set as soon as we know which, so
+    // onProgress/onFileDone below never have to guess by index alone across
+    // possibly-concurrent transfers.
+    let activeTransferId: TransferId | undefined;
 
     await runReceiverSession(conn.socket as never, {
       fs,
       logger,
       destinationRoot: settings.get().downloadDir,
       onProgress: (index, delta) => {
-        const t = Array.from(transfers.values()).find((tr) => tr.snapshot.direction === 'receive' && fileState(tr, index));
+        const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
         if (!t) return;
         const fstate = fileState(t, index);
         if (!fstate) return;
@@ -110,7 +113,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
         emitUpdate(t);
       },
       onFileDone: (index, ok, reason) => {
-        const t = Array.from(transfers.values()).find((tr) => tr.snapshot.direction === 'receive' && fileState(tr, index));
+        const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
         if (!t) return;
         const fstate = fileState(t, index);
         if (fstate) {
@@ -119,7 +122,15 @@ export function createTransferService(deps: TransferDeps): TransferService {
         }
         maybeFinish(t);
       },
+      onResume: async (transferId) => {
+        const t = transfers.get(transferId);
+        if (!t || t.snapshot.direction !== 'receive' || !t.destinationRoot) return null;
+        activeTransferId = transferId;
+        setStatus(t, 'active');
+        return { items: t.items, destinationRoot: t.destinationRoot };
+      },
       onOffer: async (offer) => {
+        activeTransferId = offer.transferId;
         for (const item of offer.items) {
           if (!isValidRelPath(item.relPath)) return { accept: false };
         }

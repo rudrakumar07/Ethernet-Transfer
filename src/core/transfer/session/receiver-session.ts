@@ -19,6 +19,15 @@ export interface ReceiverSessionDeps {
     accept: boolean;
     offsets?: Record<number, number>;
   }>;
+  /**
+   * Called on a RESUME reconnect (spec §5.3/§5.7). Must look up the
+   * previously-accepted transfer (by id) from persisted state and return its
+   * item manifest, or `null` if this transfer is unknown -> DECLINE
+   * unknown-transfer. Offsets are computed from the actual `.etpart` sizes
+   * on disk by this function, since the receiver's own filesystem is the
+   * source of truth, not a remembered byte count.
+   */
+  onResume?: (transferId: string) => Promise<{ items: TransferItem[]; destinationRoot: string } | null>;
 }
 
 const PART_SUFFIX = '.etpart';
@@ -39,7 +48,7 @@ async function resolveConflictFree(fs: FileSystem, desiredPath: string): Promise
 
 /** Drives one incoming TLS connection through OFFER, FILE frames and DONE (spec §5.3-§5.6). */
 export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDeps): Promise<void> {
-  const { fs, logger, destinationRoot, onProgress, onFileDone, onOffer } = deps;
+  const { fs, logger, destinationRoot, onProgress, onFileDone, onOffer, onResume } = deps;
   const finalPaths = new Map<number, string>();
   const mtimes = new Map<number, number>();
   const hashes = new Map<number, ReturnType<typeof createHash>>();
@@ -48,6 +57,21 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
 
   function send(type: (typeof FrameType)[keyof typeof FrameType], payload: unknown) {
     socket.write(encodeControlFrame(type, payload));
+  }
+
+  /** Registers an item manifest's file/dir destinations (shared by OFFER and RESUME). */
+  async function registerItems(items: TransferItem[], root: string) {
+    for (const item of items.filter((i) => i.kind === 'dir')) {
+      const dest = resolveWithinRoot(root, item.relPath, path.resolve, path.sep);
+      if (dest) await fs.mkdirRecursive(dest);
+    }
+    for (const item of items.filter((i) => i.kind === 'file')) {
+      const dest = resolveWithinRoot(root, item.relPath, path.resolve, path.sep);
+      if (dest) {
+        finalPaths.set(item.index, dest);
+        mtimes.set(item.index, item.mtimeMs);
+      }
+    }
   }
 
   try {
@@ -76,20 +100,33 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
             return;
           }
 
-          // Create directories up front.
-          for (const item of offer.items.filter((i) => i.kind === 'dir')) {
-            const dest = resolveWithinRoot(destinationRoot, item.relPath, path.resolve, path.sep);
-            if (dest) await fs.mkdirRecursive(dest);
-          }
-          for (const item of offer.items.filter((i) => i.kind === 'file')) {
-            const dest = resolveWithinRoot(destinationRoot, item.relPath, path.resolve, path.sep);
-            if (dest) {
-              finalPaths.set(item.index, dest);
-              mtimes.set(item.index, item.mtimeMs);
-            }
+          await registerItems(offer.items, destinationRoot);
+          send(FrameType.ACCEPT, { offsets: result.offsets ?? {} });
+          break;
+        }
+
+        case FrameType.RESUME: {
+          const resume = decodeControlPayload<{ transferId: string }>(frame.type, frame.payload);
+          const stored = await onResume?.(resume.transferId);
+          if (!stored) {
+            send(FrameType.DECLINE, { reason: 'unknown-transfer' });
+            socket.end();
+            return;
           }
 
-          send(FrameType.ACCEPT, { offsets: result.offsets ?? {} });
+          await registerItems(stored.items, stored.destinationRoot);
+
+          // Offsets come from the actual bytes on disk (spec §5.7) - the
+          // filesystem is the source of truth, never a remembered counter.
+          const offsets: Record<number, number> = {};
+          for (const item of stored.items.filter((i) => i.kind === 'file')) {
+            const finalPath = finalPaths.get(item.index);
+            if (!finalPath) continue;
+            const stat = await fs.stat(finalPath + PART_SUFFIX);
+            offsets[item.index] = stat?.size ?? 0;
+          }
+
+          send(FrameType.ACCEPT, { offsets });
           break;
         }
 

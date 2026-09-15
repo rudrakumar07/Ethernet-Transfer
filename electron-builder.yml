@@ -6,6 +6,7 @@ files:
   - dist/**/*
   - package.json
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64, arm64]
@@ -13,12 +14,24 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  include: build/installer.nsh
 mac:
+  icon: build/icon.png
   target:
     - target: dmg
       arch: [universal]
   category: public.app-category.utilities
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSLocalNetworkUsageDescription: >-
+      EtherTransfer needs to find and connect to other computers on your local
+      network or over a direct Ethernet cable to send and receive files.
+    NSBonjourServices:
+      - _ethertransfer._tcp
 linux:
+  icon: build/icon.png
   target:
     - AppImage
     - deb
