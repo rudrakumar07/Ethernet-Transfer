@@ -1,0 +1,25 @@
+appId: com.ethertransfer.app
+productName: EtherTransfer
+directories:
+  output: release
+files:
+  - dist/**/*
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  extraResources: []
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target:
+    - target: dmg
+      arch: [universal]
+  category: public.app-category.utilities
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
