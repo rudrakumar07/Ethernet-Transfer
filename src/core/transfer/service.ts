@@ -21,6 +21,7 @@ import { startTransferServer } from './server';
 import { connectToDevice } from './client';
 import { runSenderSession, type SourceFile } from './session/sender-session';
 import { runReceiverSession } from './session/receiver-session';
+import { createSessionControl, type SessionControl } from './session/control';
 import { canTransition } from './logic/transitions';
 import { isValidRelPath } from './logic/path-validator';
 
@@ -66,6 +67,8 @@ interface InternalTransfer {
   items: TransferItem[];
   sources?: Map<number, string>; // sender: index -> absolute path
   destinationRoot?: string;
+  /** Set while a connection for this transfer is actually live; lets pause()/cancel() take effect immediately. */
+  control?: SessionControl;
 }
 
 export function createTransferService(deps: TransferDeps): TransferService {
@@ -98,11 +101,16 @@ export function createTransferService(deps: TransferDeps): TransferService {
     // onProgress/onFileDone below never have to guess by index alone across
     // possibly-concurrent transfers.
     let activeTransferId: TransferId | undefined;
+    // Created upfront so the running session can listen for an abort from the
+    // very first frame, then attached to whichever transfer this connection
+    // turns out to carry as soon as OFFER/RESUME tells us (below).
+    const connectionControl = createSessionControl();
 
     await runReceiverSession(conn.socket as never, {
       fs,
       logger,
       destinationRoot: settings.get().downloadDir,
+      control: connectionControl,
       onProgress: (index, delta) => {
         const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
         if (!t) return;
@@ -126,6 +134,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
         const t = transfers.get(transferId);
         if (!t || t.snapshot.direction !== 'receive' || !t.destinationRoot) return null;
         activeTransferId = transferId;
+        t.control = connectionControl;
         setStatus(t, 'active');
         return { items: t.items, destinationRoot: t.destinationRoot };
       },
@@ -155,7 +164,12 @@ export function createTransferService(deps: TransferDeps): TransferService {
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };
-        transfers.set(transferId, { snapshot, items: offer.items, destinationRoot: settings.get().downloadDir });
+        transfers.set(transferId, {
+          snapshot,
+          items: offer.items,
+          destinationRoot: settings.get().downloadDir,
+          control: connectionControl,
+        });
 
         if (trusted && settings.get().autoAcceptTrusted) {
           setStatus(transfers.get(transferId)!, 'active');
@@ -205,7 +219,13 @@ export function createTransferService(deps: TransferDeps): TransferService {
   }
 
   async function runSend(t: InternalTransfer, device: Device) {
+    // Anything other than a first attempt from 'queued' is a reconnect: send
+    // RESUME instead of a fresh OFFER, so the receiver reports real per-file
+    // offsets from disk (spec §5.7) instead of restarting from zero.
+    const isResume = t.snapshot.status !== 'queued';
     setStatus(t, 'active');
+    const control = createSessionControl();
+    t.control = control;
     try {
       const conn = await connectToDevice(tls, identity, device);
       const identityCheck = trust.checkIdentity(device.id, conn.peer.fingerprint);
@@ -222,6 +242,11 @@ export function createTransferService(deps: TransferDeps): TransferService {
         logger,
         transferId: t.snapshot.id,
         items: t.items,
+        control,
+        resume: isResume,
+        alreadyVerified: new Set(
+          t.snapshot.files.filter((f) => f.status === 'verified').map((f) => f.item.index),
+        ),
         sourceOf: (index) => {
           const abs = t.sources?.get(index);
           const item = t.items.find((i) => i.index === index);
@@ -315,16 +340,26 @@ export function createTransferService(deps: TransferDeps): TransferService {
 
     async pause(id) {
       const t = transfers.get(id);
-      if (t) setStatus(t, 'paused');
+      if (!t) return;
+      // requestPause() takes effect on the live connection immediately;
+      // setStatus reflects it in the UI right away rather than waiting for
+      // the session to unwind and report back.
+      t.control?.requestPause();
+      setStatus(t, 'paused');
     },
     async resume(id) {
       const t = transfers.get(id);
       const device = t ? discovery.getDevice(t.snapshot.deviceId) : undefined;
       if (t && device && t.snapshot.direction === 'send') void runSend(t, device);
+      // Receive-direction resume is passive: this device can't push a resume
+      // to the sender (spec §5.7's RESUME_REQUEST round trip), so a paused
+      // incoming transfer resumes only once the sender reconnects on its own.
     },
     async cancel(id) {
       const t = transfers.get(id);
-      if (t) setStatus(t, 'cancelled');
+      if (!t) return;
+      t.control?.requestCancel();
+      setStatus(t, 'cancelled');
     },
     async retry(id) {
       const t = transfers.get(id);

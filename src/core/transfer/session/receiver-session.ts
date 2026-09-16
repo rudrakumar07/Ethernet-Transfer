@@ -8,6 +8,7 @@ import { decodeControlPayload } from '../protocol/codec';
 import { isValidRelPath, resolveWithinRoot } from '../logic/path-validator';
 import type { FileSystem, Logger } from '../../ports';
 import type { TransferItem } from '../../../shared/types';
+import type { SessionControl } from './control';
 
 export interface ReceiverSessionDeps {
   fs: FileSystem;
@@ -28,6 +29,8 @@ export interface ReceiverSessionDeps {
    * source of truth, not a remembered byte count.
    */
   onResume?: (transferId: string) => Promise<{ items: TransferItem[]; destinationRoot: string } | null>;
+  /** When set, a local Pause/Cancel request stops accepting data immediately. */
+  control?: SessionControl;
 }
 
 const PART_SUFFIX = '.etpart';
@@ -48,7 +51,7 @@ async function resolveConflictFree(fs: FileSystem, desiredPath: string): Promise
 
 /** Drives one incoming TLS connection through OFFER, FILE frames and DONE (spec §5.3-§5.6). */
 export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDeps): Promise<void> {
-  const { fs, logger, destinationRoot, onProgress, onFileDone, onOffer, onResume } = deps;
+  const { fs, logger, destinationRoot, onProgress, onFileDone, onOffer, onResume, control } = deps;
   const finalPaths = new Map<number, string>();
   const mtimes = new Map<number, number>();
   const hashes = new Map<number, ReturnType<typeof createHash>>();
@@ -58,6 +61,23 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
   function send(type: (typeof FrameType)[keyof typeof FrameType], payload: unknown) {
     socket.write(encodeControlFrame(type, payload));
   }
+
+  // A local Pause/Cancel request takes effect immediately, independent of
+  // where the frame loop below happens to be. Cancel also removes whatever
+  // partial files this connection had already started (spec §5.7 "Cancel").
+  control?.onAbort((reason) => {
+    if (reason === 'cancel') {
+      for (const finalPath of finalPaths.values()) {
+        void fs.rm(finalPath + PART_SUFFIX).catch(() => undefined);
+      }
+    }
+    try {
+      send(reason === 'pause' ? FrameType.PAUSE : FrameType.CANCEL, {});
+    } catch {
+      // socket may already be closing; nothing more to do
+    }
+    socket.end();
+  });
 
   /** Registers an item manifest's file/dir destinations (shared by OFFER and RESUME). */
   async function registerItems(items: TransferItem[], root: string) {
