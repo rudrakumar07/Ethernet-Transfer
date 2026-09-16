@@ -4,6 +4,7 @@ import { runSenderSession } from '../../src/core/transfer/session/sender-session
 import { runReceiverSession } from '../../src/core/transfer/session/receiver-session';
 import { createFakeFileSystem } from '../fakes/filesystem';
 import { createSilentLogger } from '../fakes/logger';
+import { testHello } from '../fakes/hello';
 import { createSocketPair } from '../fakes/socket-pair';
 import type { TransferItem } from '../../src/shared/types';
 
@@ -49,6 +50,7 @@ describe('sender-session alreadyVerified', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: (index) => startedIndices.push(index),
       onFileDone: () => {},
       onOffer: async () => ({ accept: false }),
@@ -59,6 +61,7 @@ describe('sender-session alreadyVerified', () => {
       fs: senderFs,
       logger,
       transferId: 'skip-verified-1',
+      hello: testHello('sender'),
       items,
       resume: true,
       alreadyVerified: new Set([0]),

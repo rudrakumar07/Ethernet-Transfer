@@ -5,6 +5,7 @@ import { runSenderSession } from '../../src/core/transfer/session/sender-session
 import { runReceiverSession } from '../../src/core/transfer/session/receiver-session';
 import { createFakeFileSystem } from '../fakes/filesystem';
 import { createSilentLogger } from '../fakes/logger';
+import { testHello } from '../fakes/hello';
 import { createSocketPair } from '../fakes/socket-pair';
 import type { TransferItem } from '../../src/shared/types';
 
@@ -44,6 +45,7 @@ describe('resume protocol', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: (_i, ok) => (fileOk = ok),
       onOffer: async () => ({ accept: false }),
@@ -54,6 +56,7 @@ describe('resume protocol', () => {
       fs: senderFs,
       logger,
       transferId: 'resume-1',
+      hello: testHello('sender'),
       items,
       sourceOf: () => ({ item: items[0], absolutePath: '/src/big.bin' }),
       onProgress: () => {},
@@ -108,6 +111,7 @@ describe('resume protocol', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: () => {},
       onOffer: async () => ({ accept: false }),
@@ -117,6 +121,7 @@ describe('resume protocol', () => {
       fs: senderFs,
       logger,
       transferId: 'resume-2',
+      hello: testHello('sender'),
       items,
       sourceOf: () => ({ item: items[0], absolutePath: '/src/changed.txt' }),
       onProgress: () => {},

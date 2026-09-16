@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Duplex } from 'node:stream';
-import { FrameType } from '../../../shared/protocol';
+import { FrameType, PROTOCOL_VERSION, type Hello } from '../../../shared/protocol';
 import { encodeControlFrame } from '../../../shared/protocol';
 import { frameStream } from '../protocol/frame-stream';
 import { decodeControlPayload } from '../protocol/codec';
@@ -19,6 +19,8 @@ export interface ReceiverSessionDeps {
   onOffer: (offer: { transferId: string; items: TransferItem[]; totalBytes: number; fileCount: number }) => Promise<{
     accept: boolean;
     offsets?: Record<number, number>;
+    /** Reason to report when accept is false; defaults to 'user' (spec §5.4). */
+    declineReason?: 'user' | 'timeout' | 'busy' | 'insufficient-space';
   }>;
   /**
    * Called on a RESUME reconnect (spec §5.3/§5.7). Must look up the
@@ -29,8 +31,18 @@ export interface ReceiverSessionDeps {
    * source of truth, not a remembered byte count.
    */
   onResume?: (transferId: string) => Promise<{ items: TransferItem[]; destinationRoot: string } | null>;
+  /**
+   * Called when the peer asks us to reconnect and resume an outbound
+   * transfer of ours (spec §5.7 "Receiver paused" -> RESUME_REQUEST). We are
+   * the original sender of that transfer; this connection's only job was to
+   * deliver the request; the actual resume happens as a new connection this
+   * device initiates.
+   */
+  onResumeRequest?: (transferId: string) => void;
   /** When set, a local Pause/Cancel request stops accepting data immediately. */
   control?: SessionControl;
+  /** This device's identity for the HELLO handshake (spec §5.2). */
+  hello: Omit<Hello, 'protocolVersion'>;
 }
 
 const PART_SUFFIX = '.etpart';
@@ -51,7 +63,8 @@ async function resolveConflictFree(fs: FileSystem, desiredPath: string): Promise
 
 /** Drives one incoming TLS connection through OFFER, FILE frames and DONE (spec §5.3-§5.6). */
 export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDeps): Promise<void> {
-  const { fs, logger, destinationRoot, onProgress, onFileDone, onOffer, onResume, control } = deps;
+  const { fs, logger, destinationRoot, onProgress, onFileDone, onOffer, onResume, onResumeRequest, control, hello } =
+    deps;
   const finalPaths = new Map<number, string>();
   const mtimes = new Map<number, number>();
   const hashes = new Map<number, ReturnType<typeof createHash>>();
@@ -97,6 +110,26 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
   try {
     for await (const frame of frameStream(socket)) {
       switch (frame.type) {
+        case FrameType.HELLO: {
+          // HELLO handshake (spec §5.2-§5.3): both sides identify themselves
+          // and check protocol compatibility before anything else.
+          const peerHello = decodeControlPayload<Hello>(frame.type, frame.payload);
+          if (Math.trunc(peerHello.protocolVersion) !== Math.trunc(PROTOCOL_VERSION)) {
+            send(FrameType.ERROR, { code: 'incompatible-version', message: peerHello.appVersion });
+            socket.end();
+            return;
+          }
+          send(FrameType.HELLO, { ...hello, protocolVersion: PROTOCOL_VERSION });
+          break;
+        }
+
+        case FrameType.RESUME_REQUEST: {
+          const req = decodeControlPayload<{ transferId: string }>(frame.type, frame.payload);
+          onResumeRequest?.(req.transferId);
+          socket.end();
+          return;
+        }
+
         case FrameType.OFFER: {
           const offer = decodeControlPayload<{
             transferId: string;
@@ -115,7 +148,7 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
 
           const result = await onOffer(offer);
           if (!result.accept) {
-            send(FrameType.DECLINE, { reason: 'user' });
+            send(FrameType.DECLINE, { reason: result.declineReason ?? 'user' });
             socket.end();
             return;
           }

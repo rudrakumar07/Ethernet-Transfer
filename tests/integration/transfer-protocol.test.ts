@@ -5,6 +5,7 @@ import { runSenderSession } from '../../src/core/transfer/session/sender-session
 import { runReceiverSession } from '../../src/core/transfer/session/receiver-session';
 import { createFakeFileSystem } from '../fakes/filesystem';
 import { createSilentLogger } from '../fakes/logger';
+import { testHello } from '../fakes/hello';
 import { createSocketPair } from '../fakes/socket-pair';
 import type { TransferItem } from '../../src/shared/types';
 
@@ -31,6 +32,7 @@ describe('sender/receiver protocol', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: () => {},
       onOffer: async () => ({ accept: true, offsets: {} }),
@@ -40,6 +42,7 @@ describe('sender/receiver protocol', () => {
       fs: senderFs,
       logger,
       transferId: 't1',
+      hello: testHello('sender'),
       items,
       sourceOf: (i) => (i === 0 ? { item: items[0], absolutePath: '/src/a.txt' } : undefined),
       onProgress: () => {},
@@ -66,6 +69,7 @@ describe('sender/receiver protocol', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: () => {},
       onOffer: async () => {
@@ -82,6 +86,7 @@ describe('sender/receiver protocol', () => {
       fs: senderFs,
       logger,
       transferId: 't2',
+      hello: testHello('sender'),
       items,
       sourceOf: () => ({ item: items[0], absolutePath: '/src/escape.txt' }),
       onProgress: () => {},
@@ -131,6 +136,7 @@ describe('sender/receiver protocol', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: (_i, ok) => {
         if (ok) fileOkCount++;
@@ -143,6 +149,7 @@ describe('sender/receiver protocol', () => {
       fs: senderFs,
       logger,
       transferId: 't3',
+      hello: testHello('sender'),
       items,
       sourceOf: () => ({ item: items[0], absolutePath: '/src/b.txt' }),
       onProgress: () => {},
@@ -177,6 +184,7 @@ describe('sender/receiver protocol', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: () => {},
       onOffer: async () => ({ accept: false }),
@@ -186,6 +194,7 @@ describe('sender/receiver protocol', () => {
       fs: senderFs,
       logger,
       transferId: 't4',
+      hello: testHello('sender'),
       items,
       sourceOf: () => ({ item: items[0], absolutePath: '/src/c.txt' }),
       onProgress: () => {},

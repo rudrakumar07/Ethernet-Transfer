@@ -26,7 +26,7 @@ export function createFakeClock(): Clock & { advance(ms: number): void } {
     },
     advance(ms: number) {
       const target = now + ms;
-      while (true) {
+      for (;;) {
         const due = Array.from(timers.entries())
           .filter(([, t]) => t.due <= target)
           .sort((a, b) => a[1].due - b[1].due)[0];

@@ -1,7 +1,8 @@
-import type { Device } from '../../shared/types';
+import type { Device, TransferId } from '../../shared/types';
 import type { TlsConnection, TlsTransport } from '../ports';
 import type { Identity } from '../identity';
 import { compareAddressPriority } from '../discovery';
+import { FrameType, PROTOCOL_VERSION, encodeControlFrame } from '../../shared/protocol';
 
 const CONNECT_TIMEOUT_MS = 2000;
 
@@ -27,4 +28,34 @@ export async function connectToDevice(
     }
   }
   throw lastError ?? new Error('unreachable');
+}
+
+/**
+ * Receiver-initiated resume (spec §5.7 "Receiver paused"): connect to the
+ * original sender as a client just long enough to say "please reconnect and
+ * resume transfer X", then close. The actual file data still flows the
+ * normal direction, sender -> receiver, once the sender reconnects.
+ */
+export async function sendResumeRequest(
+  tls: TlsTransport,
+  identity: Identity,
+  appVersion: string,
+  device: Device,
+  transferId: TransferId,
+): Promise<void> {
+  const conn = await connectToDevice(tls, identity, device);
+  try {
+    conn.socket.write(
+      encodeControlFrame(FrameType.HELLO, {
+        protocolVersion: PROTOCOL_VERSION,
+        appVersion,
+        deviceId: identity.deviceId,
+        name: identity.name,
+        os: identity.os,
+      }),
+    );
+    conn.socket.write(encodeControlFrame(FrameType.RESUME_REQUEST, { transferId }));
+  } finally {
+    conn.close();
+  }
 }

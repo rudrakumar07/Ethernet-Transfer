@@ -23,7 +23,7 @@ interface AppState {
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
 }
 
-export const useStore = create<AppState>((set, get) => ({
+export const useStore = create<AppState>((set) => ({
   devices: [],
   transfers: [],
   offers: [],

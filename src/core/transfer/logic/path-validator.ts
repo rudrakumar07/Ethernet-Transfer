@@ -5,6 +5,7 @@ const RESERVED_NAMES = new Set([
   'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
 ]);
 
+// eslint-disable-next-line no-control-regex -- deliberately rejecting control characters in filenames
 const INVALID_CHARS = /[<>:"|?*\u0000-\u001f]/;
 
 /**

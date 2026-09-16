@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { FileSystem, Logger, Platform, TlsConnection, TlsTransport } from '../ports';
 import type { Identity } from '../identity';
@@ -18,8 +17,8 @@ import type {
   TransferStatus,
 } from '../../shared/types';
 import { startTransferServer } from './server';
-import { connectToDevice } from './client';
-import { runSenderSession, type SourceFile } from './session/sender-session';
+import { connectToDevice, sendResumeRequest } from './client';
+import { runSenderSession } from './session/sender-session';
 import { runReceiverSession } from './session/receiver-session';
 import { createSessionControl, type SessionControl } from './session/control';
 import { canTransition } from './logic/transitions';
@@ -62,6 +61,9 @@ export interface TransferDeps {
 const MAX_CONCURRENT_PER_DIRECTION = 3;
 const OFFER_TIMEOUT_MS = 60_000;
 
+const BUSY_RETRY_DELAY_MS = 10_000;
+const BUSY_RETRY_MAX_ATTEMPTS = 5;
+
 interface InternalTransfer {
   snapshot: TransferSnapshot;
   items: TransferItem[];
@@ -69,6 +71,8 @@ interface InternalTransfer {
   destinationRoot?: string;
   /** Set while a connection for this transfer is actually live; lets pause()/cancel() take effect immediately. */
   control?: SessionControl;
+  /** How many times a DECLINE busy has already been retried (spec §5.8). */
+  busyRetries?: number;
 }
 
 export function createTransferService(deps: TransferDeps): TransferService {
@@ -95,6 +99,26 @@ export function createTransferService(deps: TransferDeps): TransferService {
     return t.snapshot.files.find((f) => f.item.index === index);
   }
 
+  function activeCount(direction: 'send' | 'receive'): number {
+    let n = 0;
+    for (const t of transfers.values()) {
+      if (t.snapshot.direction === direction && t.snapshot.status === 'active') n++;
+    }
+    return n;
+  }
+
+  /** Starts as many queued outbound transfers as there is room for (spec §5.8). */
+  function processSendQueue() {
+    if (activeCount('send') >= MAX_CONCURRENT_PER_DIRECTION) return;
+    const next = Array.from(transfers.values())
+      .filter((t) => t.snapshot.direction === 'send' && t.snapshot.status === 'queued')
+      .sort((a, b) => a.snapshot.createdAt - b.snapshot.createdAt)[0];
+    if (!next) return;
+    const device = discovery.getDevice(next.snapshot.deviceId);
+    if (!device) return; // device went offline; stays queued until it's seen again
+    void runSend(next, device);
+  }
+
   async function handleIncomingConnection(conn: TlsConnection) {
     // A connection carries exactly one transfer at a time (one OFFER or
     // RESUME per connection); this is set as soon as we know which, so
@@ -111,6 +135,16 @@ export function createTransferService(deps: TransferDeps): TransferService {
       logger,
       destinationRoot: settings.get().downloadDir,
       control: connectionControl,
+      hello: { appVersion: platform.appVersion(), deviceId: identity.deviceId, name: identity.name, os: identity.os },
+      onResumeRequest: (transferId) => {
+        // The peer (a receiver of ours) is asking us to reconnect and resume
+        // sending. We are the original sender; look up our outbound record.
+        const t = transfers.get(transferId);
+        const outboundDevice = t ? discovery.getDevice(t.snapshot.deviceId) : undefined;
+        if (t && outboundDevice && t.snapshot.direction === 'send') {
+          void runSend(t, outboundDevice);
+        }
+      },
       onProgress: (index, delta) => {
         const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
         if (!t) return;
@@ -142,6 +176,9 @@ export function createTransferService(deps: TransferDeps): TransferService {
         activeTransferId = offer.transferId;
         for (const item of offer.items) {
           if (!isValidRelPath(item.relPath)) return { accept: false };
+        }
+        if (activeCount('receive') >= MAX_CONCURRENT_PER_DIRECTION) {
+          return { accept: false, declineReason: 'busy' };
         }
         const fingerprint = conn.peer.fingerprint;
         const device = discovery.listDevices().find((d) => d.fingerprint === fingerprint);
@@ -244,6 +281,12 @@ export function createTransferService(deps: TransferDeps): TransferService {
         items: t.items,
         control,
         resume: isResume,
+        hello: { appVersion: platform.appVersion(), deviceId: identity.deviceId, name: identity.name, os: identity.os },
+        onIncompatibleVersion: (peerAppVersion) => {
+          setStatus(t, 'failed');
+          t.snapshot.error = `Update EtherTransfer on ${t.snapshot.deviceName} (running ${peerAppVersion})`;
+          emitUpdate(t);
+        },
         alreadyVerified: new Set(
           t.snapshot.files.filter((f) => f.status === 'verified').map((f) => f.item.index),
         ),
@@ -269,8 +312,19 @@ export function createTransferService(deps: TransferDeps): TransferService {
           maybeFinish(t);
         },
         onDeclined: (reason) => {
+          if (reason === 'busy' && (t.busyRetries ?? 0) < BUSY_RETRY_MAX_ATTEMPTS) {
+            // Re-queue and retry after a delay (spec §5.8), rather than
+            // failing outright the first time the receiver is at capacity.
+            t.busyRetries = (t.busyRetries ?? 0) + 1;
+            setStatus(t, 'queued');
+            setTimeout(() => {
+              const device2 = discovery.getDevice(t.snapshot.deviceId);
+              if (device2 && t.snapshot.status === 'queued') void runSend(t, device2);
+            }, BUSY_RETRY_DELAY_MS);
+            return;
+          }
           setStatus(t, 'declined');
-          t.snapshot.error = reason;
+          t.snapshot.error = reason === 'busy' ? 'Device busy' : reason;
           emitUpdate(t);
         },
       });
@@ -278,6 +332,8 @@ export function createTransferService(deps: TransferDeps): TransferService {
     } catch (err) {
       logger.warn('send failed', { err: String(err) });
       setStatus(t, 'interrupted');
+    } finally {
+      processSendQueue();
     }
   }
 
@@ -318,7 +374,9 @@ export function createTransferService(deps: TransferDeps): TransferService {
       const internal: InternalTransfer = { snapshot, items, sources: built.sources };
       transfers.set(transferId, internal);
       emitUpdate(internal);
-      void runSend(internal, device);
+      // Starts immediately if a slot is free, otherwise waits in the queue
+      // (spec §5.8: at most 3 concurrent outbound transfers).
+      processSendQueue();
       return transferId;
     },
 
@@ -350,10 +408,18 @@ export function createTransferService(deps: TransferDeps): TransferService {
     async resume(id) {
       const t = transfers.get(id);
       const device = t ? discovery.getDevice(t.snapshot.deviceId) : undefined;
-      if (t && device && t.snapshot.direction === 'send') void runSend(t, device);
-      // Receive-direction resume is passive: this device can't push a resume
-      // to the sender (spec §5.7's RESUME_REQUEST round trip), so a paused
-      // incoming transfer resumes only once the sender reconnects on its own.
+      if (!t || !device) return;
+      if (t.snapshot.direction === 'send') {
+        void runSend(t, device);
+      } else {
+        // Receiver can't push data itself; ask the original sender to
+        // reconnect and resume (spec §5.7 "Receiver paused" -> RESUME_REQUEST).
+        try {
+          await sendResumeRequest(tls, identity, platform.appVersion(), device, id);
+        } catch (err) {
+          logger.warn('resume request failed', { err: String(err) });
+        }
+      }
     },
     async cancel(id) {
       const t = transfers.get(id);

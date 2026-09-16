@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { Duplex } from 'node:stream';
-import { CHUNK_SIZE, FrameType, encodeControlFrame, encodeDataFrame } from '../../../shared/protocol';
+import {
+  CHUNK_SIZE,
+  FrameType,
+  PROTOCOL_VERSION,
+  encodeControlFrame,
+  encodeDataFrame,
+  type Hello,
+} from '../../../shared/protocol';
 import { frameStream } from '../protocol/frame-stream';
 import { decodeControlPayload } from '../protocol/codec';
 import type { FileSystem, Logger } from '../../ports';
@@ -26,12 +33,29 @@ export interface SenderSessionDeps {
   control?: SessionControl;
   /** File indices already verified in a prior attempt - skipped entirely on a resume/retry. */
   alreadyVerified?: Set<number>;
+  /** This device's identity for the HELLO handshake (spec §5.2). */
+  hello: Omit<Hello, 'protocolVersion'>;
+  /** Called if the peer's protocolVersion major differs from ours (spec §5.2/§9's version check). */
+  onIncompatibleVersion?: (peerAppVersion: string) => void;
 }
 
 /** Drives one outgoing TLS connection through OFFER, FILE frames and DONE (spec §5.3, §5.6-§5.7). */
 export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps): Promise<void> {
-  const { fs, logger, transferId, items, sourceOf, onProgress, onFileDone, onDeclined, resume, control, alreadyVerified } =
-    deps;
+  const {
+    fs,
+    logger,
+    transferId,
+    items,
+    sourceOf,
+    onProgress,
+    onFileDone,
+    onDeclined,
+    resume,
+    control,
+    alreadyVerified,
+    hello,
+    onIncompatibleVersion,
+  } = deps;
 
   function send(type: (typeof FrameType)[keyof typeof FrameType], payload: unknown) {
     socket.write(encodeControlFrame(type, payload));
@@ -49,6 +73,41 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
     socket.end();
   });
 
+  const stream = frameStream(socket)[Symbol.asyncIterator]();
+
+  async function nextFrame() {
+    const { value, done } = await stream.next();
+    if (done) throw new Error('connection-closed');
+    return value;
+  }
+
+  // HELLO handshake (spec §5.2-§5.3): both sides identify themselves and
+  // check protocol compatibility before anything else crosses the wire.
+  send(FrameType.HELLO, { ...hello, protocolVersion: PROTOCOL_VERSION });
+  let helloReply;
+  try {
+    helloReply = await nextFrame();
+  } catch {
+    return; // aborted, or the peer vanished before replying at all
+  }
+  if (helloReply.type === FrameType.ERROR) {
+    const err = decodeControlPayload<{ code: string; message: string }>(helloReply.type, helloReply.payload);
+    if (err.code === 'incompatible-version') onIncompatibleVersion?.(err.message);
+    socket.end();
+    return;
+  }
+  if (helloReply.type !== FrameType.HELLO) {
+    socket.destroy();
+    return;
+  }
+  const peerHello = decodeControlPayload<Hello>(helloReply.type, helloReply.payload);
+  if (Math.trunc(peerHello.protocolVersion) !== Math.trunc(PROTOCOL_VERSION)) {
+    send(FrameType.ERROR, { code: 'incompatible-version', message: peerHello.appVersion });
+    onIncompatibleVersion?.(peerHello.appVersion);
+    socket.end();
+    return;
+  }
+
   const totalBytes = items.reduce((sum, i) => sum + i.size, 0);
   if (resume) {
     send(FrameType.RESUME, { transferId });
@@ -59,14 +118,6 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
       totalBytes,
       fileCount: items.filter((i) => i.kind === 'file').length,
     });
-  }
-
-  const stream = frameStream(socket)[Symbol.asyncIterator]();
-
-  async function nextFrame() {
-    const { value, done } = await stream.next();
-    if (done) throw new Error('connection-closed');
-    return value;
   }
 
   let first;
@@ -128,7 +179,6 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
         }
       }
 
-      let sent = offset;
       let aborted = false;
       for await (const chunk of fs.openRead(source.absolutePath, { start: offset })) {
         if (control?.isAborted()) {
@@ -137,7 +187,6 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
         }
         hash.update(chunk);
         socket.write(encodeDataFrame(chunk));
-        sent += chunk.byteLength;
         onProgress(item.index, chunk.byteLength);
         void CHUNK_SIZE; // chunk size is enforced by the FileSystem adapter's stream options
       }

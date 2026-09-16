@@ -5,6 +5,7 @@ import { runReceiverSession } from '../../src/core/transfer/session/receiver-ses
 import { createSessionControl } from '../../src/core/transfer/session/control';
 import { createFakeFileSystem } from '../fakes/filesystem';
 import { createSilentLogger } from '../fakes/logger';
+import { testHello } from '../fakes/hello';
 import { createSocketPair } from '../fakes/socket-pair';
 import type { TransferItem } from '../../src/shared/types';
 
@@ -39,6 +40,7 @@ describe('pause/cancel actually stop the transfer', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: () => {},
       onOffer: async () => ({ accept: true, offsets: {} }),
@@ -48,6 +50,7 @@ describe('pause/cancel actually stop the transfer', () => {
       fs: senderFs,
       logger,
       transferId: 'cancel-1',
+      hello: testHello('sender'),
       items,
       control,
       sourceOf: (i) => ({ item: items[i], absolutePath: `/src/${items[i].relPath}` }),
@@ -83,6 +86,7 @@ describe('pause/cancel actually stop the transfer', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       onProgress: () => {},
       onFileDone: () => {
         onFileDoneCalled = true;
@@ -98,6 +102,7 @@ describe('pause/cancel actually stop the transfer', () => {
       fs: senderFs,
       logger,
       transferId: 'pause-1',
+      hello: testHello('sender'),
       items,
       control,
       sourceOf: (i) => ({ item: items[i], absolutePath: '/src/only.txt' }),
@@ -130,6 +135,7 @@ describe('pause/cancel actually stop the transfer', () => {
       fs: receiverFs,
       logger,
       destinationRoot: '/dl',
+      hello: testHello('receiver'),
       control: receiverControl,
       onProgress: (index, delta) => {
         // Cancel partway through receiving, from the receiver's own side.
@@ -143,6 +149,7 @@ describe('pause/cancel actually stop the transfer', () => {
       fs: senderFs,
       logger,
       transferId: 'cancel-2',
+      hello: testHello('sender'),
       items,
       sourceOf: () => ({ item: items[0], absolutePath: '/src/big.bin' }),
       onProgress: () => {},

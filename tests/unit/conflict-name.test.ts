@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { nextAvailableName } from '../../src/core/transfer/logic/conflict-name';
 
 function splitExt(p: string) {
-  const lastDot = p.lastIndexOf('.');
   const lastSlash = p.lastIndexOf('/');
   const dir = p.slice(0, lastSlash);
   const fileName = p.slice(lastSlash + 1);
