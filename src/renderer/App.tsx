@@ -5,6 +5,7 @@ import { TransfersScreen } from './features/transfers/TransfersScreen';
 import { DashboardScreen } from './features/dashboard/DashboardScreen';
 import { SettingsScreen } from './features/settings/SettingsScreen';
 import { OfferPrompt } from './features/offers/OfferPrompt';
+import { useApplyTheme } from './useApplyTheme';
 
 type Screen = 'home' | 'transfers' | 'dashboard' | 'settings';
 
@@ -19,6 +20,8 @@ export function App() {
   const [screen, setScreen] = useState<Screen>('home');
   const init = useStore((s) => s.init);
   const transfers = useStore((s) => s.transfers);
+  const coreStatus = useStore((s) => s.coreStatus);
+  useApplyTheme();
   const activeCount = transfers.filter((t) => t.status === 'active' || t.status === 'paused').length;
 
   useEffect(() => {
@@ -47,6 +50,13 @@ export function App() {
         ))}
       </nav>
       <main className="flex-1 flex flex-col min-w-0">
+        {!coreStatus.connected && (
+          <div className="px-3 py-1.5 text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200">
+            {coreStatus.reconnecting
+              ? 'Reconnecting to the transfer service…'
+              : 'The transfer service stopped. Restart EtherTransfer to continue.'}
+          </div>
+        )}
         {screen === 'home' && <HomeScreen onOpenTransfers={() => setScreen('transfers')} />}
         {screen === 'transfers' && <TransfersScreen />}
         {screen === 'dashboard' && <DashboardScreen />}

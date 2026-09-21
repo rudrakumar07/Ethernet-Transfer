@@ -18,7 +18,6 @@ export interface Device {
   shortId: string;
   addresses: DeviceAddress[];
   linkType: LinkType;
-  manual: boolean;
   trusted: boolean;
   latencyMs?: number;
   lastSeen: number;
@@ -123,7 +122,6 @@ export interface Settings {
   startOnLogin: boolean;
   minimizeToTray: boolean;
   ignoredInterfaces: string[];
-  manualDevices: { address: string; port: number }[];
 }
 
 export interface TrustedDeviceRecord {

@@ -15,6 +15,12 @@ export interface ReceiverSessionDeps {
   logger: Logger;
   destinationRoot: string;
   onProgress: (index: number, bytesDone: number) => void;
+  /**
+   * A file is (re)starting at an absolute byte offset. Reporting this through
+   * onProgress treated the offset as freshly transferred bytes, so a resumed
+   * file counted its existing bytes a second time.
+   */
+  onFileOffset?: (index: number, absoluteOffset: number) => void;
   onFileDone: (index: number, ok: boolean, reason?: string) => void;
   onOffer: (offer: { transferId: string; items: TransferItem[]; totalBytes: number; fileCount: number }) => Promise<{
     accept: boolean;
@@ -39,6 +45,11 @@ export interface ReceiverSessionDeps {
    * device initiates.
    */
   onResumeRequest?: (transferId: string) => void;
+  /**
+   * Called once the peer explicitly cancels. Distinct from the connection
+   * simply ending, which is reported by the session returning normally.
+   */
+  onPeerCancelled?: () => void;
   /** When set, a local Pause/Cancel request stops accepting data immediately. */
   control?: SessionControl;
   /** This device's identity for the HELLO handshake (spec §5.2). */
@@ -63,8 +74,20 @@ async function resolveConflictFree(fs: FileSystem, desiredPath: string): Promise
 
 /** Drives one incoming TLS connection through OFFER, FILE frames and DONE (spec §5.3-§5.6). */
 export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDeps): Promise<void> {
-  const { fs, logger, destinationRoot, onProgress, onFileDone, onOffer, onResume, onResumeRequest, control, hello } =
-    deps;
+  const {
+    fs,
+    logger,
+    destinationRoot,
+    onProgress,
+    onFileOffset,
+    onFileDone,
+    onOffer,
+    onResume,
+    onResumeRequest,
+    onPeerCancelled,
+    control,
+    hello,
+  } = deps;
   const finalPaths = new Map<number, string>();
   const mtimes = new Map<number, number>();
   const hashes = new Map<number, ReturnType<typeof createHash>>();
@@ -209,7 +232,7 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
             }
           }
           hashes.set(start.index, hash);
-          onProgress(start.index, start.offset);
+          onFileOffset?.(start.index, start.offset);
           break;
         }
 
@@ -263,6 +286,7 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
           for (const finalPath of finalPaths.values()) {
             await fs.rm(finalPath + PART_SUFFIX).catch(() => undefined);
           }
+          onPeerCancelled?.();
           socket.end();
           return;
         }
@@ -278,5 +302,10 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
   } catch (err) {
     logger.warn('receiver session error', { err: String(err) });
     socket.destroy();
+  } finally {
+    // A half-written file must not keep its handle; the .etpart stays on disk
+    // so the transfer can be resumed later.
+    await writeStream?.close().catch(() => undefined);
+    writeStream = null;
   }
 }

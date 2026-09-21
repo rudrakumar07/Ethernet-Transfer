@@ -1,8 +1,18 @@
-import { app, dialog, shell, type BrowserWindow } from 'electron';
+import { app, dialog, nativeTheme, shell, type BrowserWindow } from 'electron';
 import type { MainCommands } from '../shared/ipc-contract';
 
-export function createMainCommands(win: BrowserWindow): MainCommands {
+export interface MainCommandsHandle extends MainCommands {
+  /** Read by the window's close handler, which cannot await an IPC round trip. */
+  shouldMinimizeToTray(): boolean;
+}
+
+export function createMainCommands(win: BrowserWindow): MainCommandsHandle {
+  let minimizeToTray = true;
   return {
+    shouldMinimizeToTray: () => minimizeToTray,
+    async setMinimizeToTray(enabled) {
+      minimizeToTray = enabled;
+    },
     async pickFiles() {
       const result = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] });
       return result.canceled ? [] : result.filePaths;
@@ -16,6 +26,9 @@ export function createMainCommands(win: BrowserWindow): MainCommands {
     },
     async setStartOnLogin(enabled) {
       app.setLoginItemSettings({ openAtLogin: enabled });
+    },
+    async setTheme(theme) {
+      nativeTheme.themeSource = theme;
     },
   };
 }

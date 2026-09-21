@@ -27,7 +27,6 @@ function defaultSettings(platform: Platform): Settings {
     startOnLogin: false,
     minimizeToTray: true,
     ignoredInterfaces: [],
-    manualDevices: [],
   };
 }
 

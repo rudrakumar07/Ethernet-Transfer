@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { CoreEventName } from '../shared/ipc-contract';
 
 const CORE_COMMAND_METHODS = [
-  'getSnapshot', 'sendFiles', 'connectByAddress', 'respondToOffer', 'pauseTransfer',
+  'getSnapshot', 'sendFiles', 'respondToOffer', 'pauseTransfer',
   'resumeTransfer', 'cancelTransfer', 'retryTransfer', 'discardTransfer', 'setTrusted',
   'getSettings', 'updateSettings', 'getStats', 'getDiagnostics',
 ] as const;
@@ -17,6 +17,8 @@ const main = {
   pickFolder: () => ipcRenderer.invoke('main:pickFolder'),
   showInFolder: (path: string) => ipcRenderer.invoke('main:showInFolder', path),
   setStartOnLogin: (enabled: boolean) => ipcRenderer.invoke('main:setStartOnLogin', enabled),
+  setTheme: (theme: string) => ipcRenderer.invoke('main:setTheme', theme),
+  setMinimizeToTray: (enabled: boolean) => ipcRenderer.invoke('main:setMinimizeToTray', enabled),
 };
 
 function onEvent(name: CoreEventName, listener: (payload: unknown) => void): () => void {

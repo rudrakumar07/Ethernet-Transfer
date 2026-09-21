@@ -15,7 +15,6 @@ import type {
 export interface CoreCommands {
   getSnapshot(): Promise<{ devices: Device[]; transfers: TransferSnapshot[]; offers: IncomingOffer[]; settings: Settings }>;
   sendFiles(deviceId: DeviceId, paths: string[]): Promise<TransferId>;
-  connectByAddress(address: string, port?: number): Promise<void>;
   respondToOffer(offerId: string, accept: boolean, trustDevice: boolean): Promise<void>;
   pauseTransfer(id: TransferId): Promise<void>;
   resumeTransfer(id: TransferId): Promise<void>;
@@ -35,6 +34,9 @@ export interface MainCommands {
   pickFolder(): Promise<string | null>;
   showInFolder(path: string): Promise<void>;
   setStartOnLogin(enabled: boolean): Promise<void>;
+  /** Drives Electron's nativeTheme so menus, dialogs and scrollbars match. */
+  setTheme(theme: Settings['theme']): Promise<void>;
+  setMinimizeToTray(enabled: boolean): Promise<void>;
 }
 
 /** Events core -> renderer. */

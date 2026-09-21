@@ -24,6 +24,7 @@ export interface CoreHandle {
   api: CoreCommands;
   onEvent<K extends keyof CoreEvents>(name: K, listener: (payload: CoreEvents[K]) => void): void;
   start(): Promise<void>;
+  stop(): Promise<void>;
 }
 
 /** Composition root: builds adapters, wires modules, exposes the typed API. */
@@ -86,6 +87,8 @@ export async function createCore(dataDir: string, appVersion: string): Promise<C
 
   clock.setInterval(() => {
     stats.recordDeviceCount(discovery.listDevices().length);
+    const { sentBps, receivedBps } = transfer.throughput();
+    stats.recordThroughput(sentBps, receivedBps);
     emit('stats:tick', stats.tick());
   }, 500);
 
@@ -102,11 +105,19 @@ export async function createCore(dataDir: string, appVersion: string): Promise<C
       set.add(listener as (payload: unknown) => void);
     },
     async start() {
-      await discovery.start();
+      // The transfer server binds first: discovery advertises transferPort(),
+      // and starting it the other way round meant the first beacons announced
+      // the preferred port even when the server had landed on a different one.
       await transfer.start();
       transferPort = transfer.port();
+      await discovery.start();
       stats.start();
       logger.info('core started', { deviceId: identity.deviceId, port: transferPort });
+    },
+    async stop() {
+      stats.stop();
+      await transfer.stop();
+      await discovery.stop();
     },
   };
 }

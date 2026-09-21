@@ -34,9 +34,6 @@ export function createCoreApi(deps: CoreApiDeps): CoreCommands {
     async sendFiles(deviceId, paths) {
       return transfer.send(deviceId, paths);
     },
-    async connectByAddress(address, port = 47800) {
-      await discovery.connectByAddress(address, port);
-    },
     async respondToOffer(offerId, accept, trustDevice) {
       await transfer.respondToOffer(offerId, accept, trustDevice);
     },

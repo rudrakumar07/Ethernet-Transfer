@@ -10,6 +10,7 @@ import {
 } from '../../../shared/protocol';
 import { frameStream } from '../protocol/frame-stream';
 import { decodeControlPayload } from '../protocol/codec';
+import { writeWithBackpressure } from '../protocol/flow-control';
 import type { FileSystem, Logger } from '../../ports';
 import type { TransferItem } from '../../../shared/types';
 import type { SessionControl } from './control';
@@ -26,6 +27,8 @@ export interface SenderSessionDeps {
   items: TransferItem[];
   sourceOf: (index: number) => SourceFile | undefined;
   onProgress: (index: number, bytesDone: number) => void;
+  /** A file is (re)starting at this absolute byte offset (see receiver-session). */
+  onFileOffset?: (index: number, absoluteOffset: number) => void;
   onFileDone: (index: number, ok: boolean, reason?: string) => void;
   onDeclined?: (reason: string) => void;
   resume?: boolean;
@@ -48,6 +51,7 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
     items,
     sourceOf,
     onProgress,
+    onFileOffset,
     onFileDone,
     onDeclined,
     resume,
@@ -171,6 +175,7 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
         mtimeMs: changed ? stat.mtimeMs : undefined,
       });
 
+      onFileOffset?.(item.index, offset);
       const hash = createHash('sha256');
       if (offset > 0) {
         for await (const chunk of fs.openRead(source.absolutePath, { start: 0 })) {
@@ -185,10 +190,21 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
           aborted = true;
           break;
         }
-        hash.update(chunk);
-        socket.write(encodeDataFrame(chunk));
-        onProgress(item.index, chunk.byteLength);
-        void CHUNK_SIZE; // chunk size is enforced by the FileSystem adapter's stream options
+        // Frames are split to stay inside the protocol's payload ceiling; the
+        // filesystem adapter's chunk size is a hint, not a guarantee.
+        for (let start = 0; start < chunk.byteLength; start += CHUNK_SIZE) {
+          const slice = chunk.subarray(start, Math.min(start + CHUNK_SIZE, chunk.byteLength));
+          hash.update(slice);
+          // Waiting for drain is what keeps the socket's write buffer bounded
+          // and makes reported progress track bytes that actually left.
+          await writeWithBackpressure(socket, encodeDataFrame(slice));
+          if (control?.isAborted()) {
+            aborted = true;
+            break;
+          }
+          onProgress(item.index, slice.byteLength);
+        }
+        if (aborted) break;
       }
       if (aborted) break;
 

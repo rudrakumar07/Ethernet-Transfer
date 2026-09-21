@@ -51,10 +51,4 @@ describe('mergeSighting', () => {
     expect(device.trusted).toBe(true);
   });
 
-  it('keeps manual=true once set, even after a beacon sighting updates it', () => {
-    const devices = new Map<string, Device>();
-    devices.set('dev-1', { ...mergeSighting(new Map(), sighting(), 1000, (fp) => fp, () => false), manual: true });
-    const updated = mergeSighting(devices, sighting(), 2000, (fp) => fp, () => false);
-    expect(updated.manual).toBe(true);
-  });
 });

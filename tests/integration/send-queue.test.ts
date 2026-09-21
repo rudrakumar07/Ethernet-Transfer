@@ -63,14 +63,14 @@ describe('outbound send queue', () => {
         events: new (await import('../../src/shared/typed-emitter')).TypedEmitter(),
         listDevices: () => [device],
         getDevice: (id) => (id === device.id ? device : undefined),
-        connectByAddress: async () => device,
+        markSeen: () => {},
         start: async () => {},
         stop: async () => {},
       },
       settings: {
         get: () => ({
           deviceName: 'Me', downloadDir: '/dl', autoAcceptTrusted: true, theme: 'system', startOnLogin: false,
-          minimizeToTray: true, ignoredInterfaces: [], manualDevices: [],
+          minimizeToTray: true, ignoredInterfaces: [],
         }),
         update: async (p) => ({ ...p }) as never,
         events: new (await import('../../src/shared/typed-emitter')).TypedEmitter(),

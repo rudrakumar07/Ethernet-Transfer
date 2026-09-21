@@ -21,6 +21,7 @@ import { connectToDevice, sendResumeRequest } from './client';
 import { runSenderSession } from './session/sender-session';
 import { runReceiverSession } from './session/receiver-session';
 import { createSessionControl, type SessionControl } from './session/control';
+import { endGracefully } from './protocol/flow-control';
 import { canTransition } from './logic/transitions';
 import { isValidRelPath } from './logic/path-validator';
 
@@ -41,6 +42,8 @@ export interface TransferService {
   retry(id: TransferId): Promise<void>;
   discard(id: TransferId): Promise<void>;
   list(): TransferSnapshot[];
+  /** Combined live rate of all active transfers, per direction. */
+  throughput(): { sentBps: number; receivedBps: number };
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -59,16 +62,30 @@ export interface TransferDeps {
 }
 
 const MAX_CONCURRENT_PER_DIRECTION = 3;
+const PREFERRED_TRANSFER_PORT = 47800;
 const OFFER_TIMEOUT_MS = 60_000;
 
 const BUSY_RETRY_DELAY_MS = 10_000;
 const BUSY_RETRY_MAX_ATTEMPTS = 5;
+
+/** Minimum gap between speed samples; shorter windows are mostly jitter. */
+const SPEED_SAMPLE_MS = 50;
+/** Weight given to the newest sample; the rest carries the previous estimate. */
+const SPEED_SMOOTHING = 0.4;
+
+interface SpeedSampler {
+  lastBytes: number;
+  lastAt: number;
+}
 
 interface InternalTransfer {
   snapshot: TransferSnapshot;
   items: TransferItem[];
   sources?: Map<number, string>; // sender: index -> absolute path
   destinationRoot?: string;
+  /** Certificate fingerprint of the peer on the connection that carried this transfer. */
+  peerFingerprint?: string;
+  speed?: SpeedSampler;
   /** Set while a connection for this transfer is actually live; lets pause()/cancel() take effect immediately. */
   control?: SessionControl;
   /** How many times a DECLINE busy has already been retried (spec §5.8). */
@@ -79,12 +96,61 @@ export function createTransferService(deps: TransferDeps): TransferService {
   const { fs, platform, tls, identity, trust, discovery, settings, stats, logger } = deps;
   const events = new TypedEmitter<TransferEvents>();
   const transfers = new Map<TransferId, InternalTransfer>();
-  const pendingOffers = new Map<string, { offer: IncomingOffer; resolve: (r: { accept: boolean; offsets?: Record<number, number> }) => void; timer: unknown }>();
+  const pendingOffers = new Map<
+    string,
+    {
+      offer: IncomingOffer;
+      resolve: (r: { accept: boolean; offsets?: Record<number, number> }) => void;
+      timer: unknown;
+      /** Peer certificate fingerprint - the only stable identity to trust by. */
+      fingerprint: string;
+    }
+  >();
   let serverPort = 0;
+  let server: { port: number; close(): Promise<void> } | undefined;
 
   function emitUpdate(t: InternalTransfer) {
     t.snapshot.updatedAt = Date.now();
     events.emit('updated', t.snapshot);
+  }
+
+  /**
+   * Records transferred bytes and derives the live rate and ETA.
+   *
+   * speedBps used to be hard-coded to 0 and stats.recordThroughput() was never
+   * called from anywhere, so the transfer bar permanently read "0 MB/s".
+   */
+  function recordProgress(t: InternalTransfer, delta: number) {
+    const now = Date.now();
+    const sampler = (t.speed ??= { lastBytes: t.snapshot.bytesDone, lastAt: now });
+    const elapsed = now - sampler.lastAt;
+    if (elapsed >= SPEED_SAMPLE_MS) {
+      const instant = ((t.snapshot.bytesDone - sampler.lastBytes) * 1000) / elapsed;
+      t.snapshot.speedBps = t.snapshot.speedBps
+        ? t.snapshot.speedBps * (1 - SPEED_SMOOTHING) + instant * SPEED_SMOOTHING
+        : instant;
+      sampler.lastBytes = t.snapshot.bytesDone;
+      sampler.lastAt = now;
+    }
+    const remaining = Math.max(0, t.snapshot.totalBytes - t.snapshot.bytesDone);
+    t.snapshot.etaSeconds = t.snapshot.speedBps > 0 ? remaining / t.snapshot.speedBps : undefined;
+    // Bytes moving over a live connection are proof the peer is still there;
+    // without this a link busy enough to delay beacons could drop the very
+    // device it is transferring with, and the transfer would fail with it.
+    discovery.markSeen(t.snapshot.deviceId);
+    void delta;
+  }
+
+  /** Total live throughput per direction, for the stats service. */
+  function throughput(): { sentBps: number; receivedBps: number } {
+    let sentBps = 0;
+    let receivedBps = 0;
+    for (const t of transfers.values()) {
+      if (t.snapshot.status !== 'active') continue;
+      if (t.snapshot.direction === 'send') sentBps += t.snapshot.speedBps;
+      else receivedBps += t.snapshot.speedBps;
+    }
+    return { sentBps, receivedBps };
   }
 
   function setStatus(t: InternalTransfer, status: TransferStatus) {
@@ -97,6 +163,34 @@ export function createTransferService(deps: TransferDeps): TransferService {
 
   function fileState(t: InternalTransfer, index: number): TransferFileState | undefined {
     return t.snapshot.files.find((f) => f.item.index === index);
+  }
+
+  /**
+   * The transfer total is the sum of its files' absolute progress, never a
+   * running counter. Accumulating deltas globally double-counted every byte a
+   * resume replayed - a paused-then-resumed 200 MiB file reported 419 MB done.
+   */
+  function recountBytes(t: InternalTransfer) {
+    t.snapshot.bytesDone = t.snapshot.files.reduce((sum, f) => sum + f.bytesDone, 0);
+  }
+
+  /** A file (re)started at an absolute offset: set its progress, don't add to it. */
+  function setFileOffset(t: InternalTransfer, index: number, offset: number) {
+    const fstate = fileState(t, index);
+    if (!fstate) return;
+    fstate.bytesDone = Math.min(offset, fstate.item.size);
+    recountBytes(t);
+    t.speed = undefined; // the rate estimate restarts with the file
+    emitUpdate(t);
+  }
+
+  /** Bytes just moved for one file. */
+  function addFileBytes(t: InternalTransfer, index: number, delta: number) {
+    const fstate = fileState(t, index);
+    if (!fstate) return false;
+    fstate.bytesDone = Math.min(fstate.bytesDone + delta, fstate.item.size);
+    recountBytes(t);
+    return true;
   }
 
   function activeCount(direction: 'send' | 'receive'): number {
@@ -116,7 +210,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
     if (!next) return;
     const device = discovery.getDevice(next.snapshot.deviceId);
     if (!device) return; // device went offline; stays queued until it's seen again
-    void runSend(next, device);
+    void runSend(next, device).catch((err) => logger.warn('send failed', { err: String(err) }));
   }
 
   async function handleIncomingConnection(conn: TlsConnection) {
@@ -129,6 +223,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
     // very first frame, then attached to whichever transfer this connection
     // turns out to carry as soon as OFFER/RESUME tells us (below).
     const connectionControl = createSessionControl();
+    let peerCancelled = false;
 
     await runReceiverSession(conn.socket as never, {
       fs,
@@ -136,23 +231,30 @@ export function createTransferService(deps: TransferDeps): TransferService {
       destinationRoot: settings.get().downloadDir,
       control: connectionControl,
       hello: { appVersion: platform.appVersion(), deviceId: identity.deviceId, name: identity.name, os: identity.os },
+      onPeerCancelled: () => {
+        peerCancelled = true;
+      },
       onResumeRequest: (transferId) => {
         // The peer (a receiver of ours) is asking us to reconnect and resume
         // sending. We are the original sender; look up our outbound record.
         const t = transfers.get(transferId);
         const outboundDevice = t ? discovery.getDevice(t.snapshot.deviceId) : undefined;
         if (t && outboundDevice && t.snapshot.direction === 'send') {
-          void runSend(t, outboundDevice);
+          void runSend(t, outboundDevice).catch((err) =>
+            logger.warn('resume send failed', { err: String(err) }),
+          );
         }
       },
       onProgress: (index, delta) => {
         const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
         if (!t) return;
-        const fstate = fileState(t, index);
-        if (!fstate) return;
-        fstate.bytesDone += delta;
-        t.snapshot.bytesDone += delta;
+        if (!addFileBytes(t, index, delta)) return;
+        recordProgress(t, delta);
         emitUpdate(t);
+      },
+      onFileOffset: (index, offset) => {
+        const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
+        if (t) setFileOffset(t, index, offset);
       },
       onFileDone: (index, ok, reason) => {
         const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
@@ -161,6 +263,8 @@ export function createTransferService(deps: TransferDeps): TransferService {
         if (fstate) {
           fstate.status = ok ? 'verified' : 'failed';
           fstate.reason = reason;
+          if (ok) fstate.bytesDone = fstate.item.size;
+          recountBytes(t);
         }
         maybeFinish(t);
       },
@@ -206,6 +310,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
           items: offer.items,
           destinationRoot: settings.get().downloadDir,
           control: connectionControl,
+          peerFingerprint: fingerprint,
         });
 
         if (trusted && settings.get().autoAcceptTrusted) {
@@ -237,7 +342,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
             events.emit('offerClosed', { offerId });
             resolve({ accept: false });
           }, OFFER_TIMEOUT_MS);
-          pendingOffers.set(offerId, { offer: incoming, resolve, timer });
+          pendingOffers.set(offerId, { offer: incoming, resolve, timer, fingerprint });
         }).then((r) => {
           if (r.accept) setStatus(transfers.get(transferId)!, 'active');
           else transfers.delete(transferId);
@@ -245,14 +350,35 @@ export function createTransferService(deps: TransferDeps): TransferService {
         });
       },
     });
+
+    // The connection is over. An inbound transfer that is still running has
+    // lost its only data source, so it has to reach a terminal state here -
+    // otherwise it sits at "active" forever with no way to resume or dismiss,
+    // which is exactly how a cancelled or dropped transfer used to look.
+    const t = activeTransferId ? transfers.get(activeTransferId) : undefined;
+    if (t && (t.snapshot.status === 'active' || t.snapshot.status === 'awaiting-accept')) {
+      t.snapshot.speedBps = 0;
+      t.snapshot.etaSeconds = undefined;
+      t.speed = undefined;
+      // A cancel discards the partial file; a dropped link keeps it so the
+      // transfer can pick up where it left off.
+      setStatus(t, peerCancelled ? 'cancelled' : 'interrupted');
+    }
+    if (t?.control === connectionControl) t.control = undefined;
   }
 
   function maybeFinish(t: InternalTransfer) {
+    // An empty file list is not a finished transfer - every() is vacuously true
+    // on it, which would complete a folder-only transfer before it began.
+    if (t.snapshot.files.length === 0) return;
     const allDone = t.snapshot.files.every((f) => f.status === 'verified' || f.status === 'failed');
     if (!allDone) return;
     const anyFailed = t.snapshot.files.some((f) => f.status === 'failed');
+    t.snapshot.speedBps = 0;
+    t.snapshot.etaSeconds = undefined;
     setStatus(t, anyFailed ? 'completed-with-errors' : 'completed');
-    stats.recordDeviceBytes(t.snapshot.deviceId, t.snapshot.deviceName, 'wired', t.snapshot.bytesDone);
+    const linkType = discovery.getDevice(t.snapshot.deviceId)?.linkType ?? 'wired';
+    stats.recordDeviceBytes(t.snapshot.deviceId, t.snapshot.deviceName, linkType, t.snapshot.bytesDone);
   }
 
   async function runSend(t: InternalTransfer, device: Device) {
@@ -287,9 +413,11 @@ export function createTransferService(deps: TransferDeps): TransferService {
           t.snapshot.error = `Update EtherTransfer on ${t.snapshot.deviceName} (running ${peerAppVersion})`;
           emitUpdate(t);
         },
-        alreadyVerified: new Set(
-          t.snapshot.files.filter((f) => f.status === 'verified').map((f) => f.item.index),
-        ),
+        // Only a genuine resume may skip files: a retry sends a fresh OFFER, so
+        // the receiver starts a brand-new record and expects every file again.
+        alreadyVerified: isResume
+          ? new Set(t.snapshot.files.filter((f) => f.status === 'verified').map((f) => f.item.index))
+          : new Set<number>(),
         sourceOf: (index) => {
           const abs = t.sources?.get(index);
           const item = t.items.find((i) => i.index === index);
@@ -299,15 +427,18 @@ export function createTransferService(deps: TransferDeps): TransferService {
           const fstate = fileState(t, index);
           if (!fstate) return;
           fstate.status = 'sending';
-          fstate.bytesDone += delta;
-          t.snapshot.bytesDone += delta;
+          addFileBytes(t, index, delta);
+          recordProgress(t, delta);
           emitUpdate(t);
         },
+        onFileOffset: (index, offset) => setFileOffset(t, index, offset),
         onFileDone: (index, ok, reason) => {
           const fstate = fileState(t, index);
           if (fstate) {
             fstate.status = ok ? 'verified' : 'failed';
             fstate.reason = reason;
+            if (ok) fstate.bytesDone = fstate.item.size;
+            recountBytes(t);
           }
           maybeFinish(t);
         },
@@ -328,11 +459,19 @@ export function createTransferService(deps: TransferDeps): TransferService {
           emitUpdate(t);
         },
       });
-      conn.close();
+      // Not awaited: the send slot is free as soon as the session is done, and
+      // the flush only needs to outlive this function, not block the queue.
+      void endGracefully(conn.socket as never, () => conn.close());
     } catch (err) {
       logger.warn('send failed', { err: String(err) });
       setStatus(t, 'interrupted');
     } finally {
+      if (t.control === control) t.control = undefined;
+      if (t.snapshot.status !== 'active') {
+        t.snapshot.speedBps = 0;
+        t.snapshot.etaSeconds = undefined;
+        t.speed = undefined;
+      }
       processSendQueue();
     }
   }
@@ -386,8 +525,12 @@ export function createTransferService(deps: TransferDeps): TransferService {
       clearTimeout(pending.timer as NodeJS.Timeout);
       pendingOffers.delete(offerId);
       if (trustDevice) {
+        // The certificate fingerprint is the identity trust is keyed on.
+        // Storing the offer's deviceId here (a UUID, or the fingerprint only
+        // for an unknown peer) meant isTrusted() could never match afterwards,
+        // so "Always accept from this device" silently did nothing.
         await trust.trust({
-          fingerprint: pending.offer.deviceId,
+          fingerprint: pending.fingerprint,
           deviceId: pending.offer.deviceId,
           name: pending.offer.deviceName,
         });
@@ -429,29 +572,60 @@ export function createTransferService(deps: TransferDeps): TransferService {
     },
     async retry(id) {
       const t = transfers.get(id);
-      const device = t ? discovery.getDevice(t.snapshot.deviceId) : undefined;
-      if (t && device && t.snapshot.direction === 'send') void runSend(t, device);
+      if (!t || t.snapshot.direction !== 'send') return;
+      // A retry starts over from a fresh OFFER. Going straight to runSend left
+      // the status at 'failed', which made it send RESUME instead - and the
+      // receiver, having no record of that transfer, replied unknown-transfer.
+      t.snapshot.status = 'queued';
+      t.snapshot.error = undefined;
+      t.snapshot.bytesDone = 0;
+      t.snapshot.speedBps = 0;
+      t.snapshot.etaSeconds = undefined;
+      t.speed = undefined;
+      t.busyRetries = 0;
+      for (const f of t.snapshot.files) {
+        f.status = 'queued';
+        f.bytesDone = 0;
+        f.reason = undefined;
+      }
+      emitUpdate(t);
+      processSendQueue();
     },
     async discard(id) {
+      const t = transfers.get(id);
+      // Dropping the record without stopping the session left it running
+      // invisibly, still writing bytes with nowhere to report them.
+      t?.control?.requestCancel();
       transfers.delete(id);
     },
 
     list: () => Array.from(transfers.values()).map((t) => t.snapshot),
 
+    throughput,
+
     async start() {
-      const handle = await startTransferServer({
+      server = await startTransferServer({
         tls,
         identity,
         trust,
         logger,
-        preferredPort: 47800,
-        onConnection: (conn) => void handleIncomingConnection(conn),
+        preferredPort: PREFERRED_TRANSFER_PORT,
+        onConnection: (conn) => {
+          // An unhandled rejection here would terminate the core process, which
+          // the UI experiences as every device vanishing at once.
+          handleIncomingConnection(conn).catch((err) => {
+            logger.warn('incoming connection failed', { err: String(err) });
+            conn.close();
+          });
+        },
       });
-      serverPort = handle.port;
+      serverPort = server.port;
     },
 
     async stop() {
-      // Server handle is not retained beyond start(); acceptable for v1 shutdown via process exit.
+      for (const t of transfers.values()) t.control?.requestCancel();
+      await server?.close();
+      server = undefined;
     },
   };
 }

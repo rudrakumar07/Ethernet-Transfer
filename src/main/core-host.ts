@@ -59,6 +59,13 @@ export function createCoreHost(): CoreHost {
     rendererPort = port1;
 
     child.once('exit', () => {
+      // In-flight calls can never be answered now; leaving them pending made
+      // the renderer hang forever on whatever it had asked for.
+      for (const [callId, call] of pending) {
+        pending.delete(callId);
+        call.reject(new Error('core-restarting'));
+      }
+      rendererPort = null;
       emit('core:status', { connected: false, reconnecting: true });
       const now = Date.now();
       restarts.push(now);
@@ -76,9 +83,13 @@ export function createCoreHost(): CoreHost {
   return {
     call<T>(method: string, args: unknown[]): Promise<T> {
       return new Promise((resolve, reject) => {
+        if (!rendererPort) {
+          reject(new Error('core-unavailable'));
+          return;
+        }
         const callId = String(++callCounter);
         pending.set(callId, { resolve: resolve as (v: unknown) => void, reject });
-        rendererPort?.postMessage({ kind: 'call', callId, method, args });
+        rendererPort.postMessage({ kind: 'call', callId, method, args });
       });
     },
     on(event, listener) {

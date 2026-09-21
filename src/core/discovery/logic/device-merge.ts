@@ -8,7 +8,6 @@ export interface Sighting {
   fingerprint: string;
   port: number;
   address: DeviceAddress;
-  manual?: boolean;
 }
 
 /** Merge a new sighting into the existing device map by deviceId (spec §4.1). */
@@ -37,7 +36,6 @@ export function mergeSighting(
     shortId: shortIdOf(sighting.fingerprint),
     addresses,
     linkType: bestLinkType(addresses.map((a) => a.linkType)),
-    manual: prior?.manual || sighting.manual === true,
     trusted: isTrusted(sighting.fingerprint),
     latencyMs: prior?.latencyMs,
     lastSeen: now,

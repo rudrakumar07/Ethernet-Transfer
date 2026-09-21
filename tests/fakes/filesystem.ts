@@ -6,8 +6,19 @@ interface FileEntry {
   mtimeMs: number;
 }
 
+export interface FakeFileSystemOptions {
+  /**
+   * Split reads into chunks of this size, the way fs.createReadStream does
+   * (64 KiB by default in Node). Left unset, a read yields the whole file as a
+   * single chunk, which is what most tests want.
+   */
+  readChunkSize?: number;
+}
+
 /** In-memory FileSystem port implementation for unit/integration tests. */
-export function createFakeFileSystem(): FileSystem & { _dump(): Record<string, string> } {
+export function createFakeFileSystem(
+  options: FakeFileSystemOptions = {},
+): FileSystem & { _dump(): Record<string, string> } {
   const files = new Map<string, FileEntry>();
   const dirs = new Set<string>();
 
@@ -85,14 +96,17 @@ export function createFakeFileSystem(): FileSystem & { _dump(): Record<string, s
       const entry = files.get(key);
       const start = opts?.start ?? 0;
       const data = entry ? entry.data.subarray(start) : Buffer.alloc(0);
+      const chunkSize = options.readChunkSize ?? Number.POSITIVE_INFINITY;
       const readable: ReadableByteStream = {
         [Symbol.asyncIterator]() {
-          let done = false;
+          let offset = 0;
           return {
             async next() {
-              if (done || data.length === 0) return { value: undefined as never, done: true };
-              done = true;
-              return { value: data, done: false };
+              if (offset >= data.length) return { value: undefined as never, done: true };
+              const end = Math.min(offset + chunkSize, data.length);
+              const chunk = data.subarray(offset, end);
+              offset = end;
+              return { value: chunk, done: false };
             },
           };
         },

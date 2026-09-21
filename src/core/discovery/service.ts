@@ -22,7 +22,13 @@ export interface DiscoveryService {
   events: TypedEmitter<DiscoveryEvents>;
   listDevices(): Device[];
   getDevice(id: DeviceId): Device | undefined;
-  connectByAddress(address: string, port: number): Promise<Device>;
+  /**
+   * Refreshes a device's presence from something other than a beacon - namely
+   * bytes moving over a live TLS connection. A connection that is actively
+   * carrying a transfer is stronger proof of presence than a UDP beacon, and
+   * without this a busy link could drop the very peer it is talking to.
+   */
+  markSeen(id: DeviceId): void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -66,26 +72,9 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
     listDevices: () => Array.from(devices.values()),
     getDevice: (id) => devices.get(id),
 
-    async connectByAddress(address, port) {
-      // A manual device is provisionally added; its real identity is confirmed
-      // on first TLS handshake (spec §4.3 "Connect by address").
-      const deviceId = `manual:${address}:${port}`;
-      const device: Device = {
-        id: deviceId,
-        name: address,
-        os: 'unknown',
-        fingerprint: '',
-        shortId: '----',
-        addresses: [{ address, family: address.includes(':') ? 'IPv6' : 'IPv4', iface: 'manual', linkType: 'wired' }],
-        linkType: 'wired',
-        manual: true,
-        trusted: false,
-        lastSeen: clock.now(),
-        port,
-      };
-      devices.set(deviceId, device);
-      events.emit('deviceUp', device);
-      return device;
+    markSeen(id) {
+      const device = devices.get(id);
+      if (device) device.lastSeen = clock.now();
     },
 
     async start() {
@@ -98,7 +87,6 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
         } },
         () =>
           Array.from(devices.values())
-            .filter((d) => !d.manual || d.fingerprint)
             .map((d) => {
               const best = [...d.addresses].sort((a, b) => compareAddressPriority(a.linkType, b.linkType))[0];
               return best ? { deviceId: d.id, address: best.address } : undefined;
@@ -135,7 +123,6 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
       presenceTimer = clock.setInterval(() => {
         const now = clock.now();
         for (const device of Array.from(devices.values())) {
-          if (device.manual) continue;
           if (!isOnline(device.lastSeen, now)) {
             devices.delete(device.id);
             events.emit('deviceDown', { deviceId: device.id });

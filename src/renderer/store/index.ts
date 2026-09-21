@@ -17,13 +17,14 @@ interface AppState {
   selectDevice: (id: string | null) => void;
   setRightPanelMode: (mode: 'network' | 'device') => void;
   init: () => Promise<void>;
+  refresh: () => Promise<void>;
   sendFiles: (deviceId: string, paths: string[]) => Promise<void>;
   respondToOffer: (offerId: string, accept: boolean, trust: boolean) => Promise<void>;
   fetchStats: (range: '15m' | '1h' | '24h') => Promise<StatsSnapshot>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
 }
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>((set, get) => ({
   devices: [],
   transfers: [],
   offers: [],
@@ -36,9 +37,30 @@ export const useStore = create<AppState>((set) => ({
   selectDevice: (id) => set({ selectedDeviceId: id, rightPanelMode: id ? 'device' : 'network' }),
   setRightPanelMode: (mode) => set({ rightPanelMode: mode }),
 
-  async init() {
+  async refresh() {
     const snapshot = await api.core.getSnapshot();
-    set({ devices: snapshot.devices, transfers: snapshot.transfers, settings: snapshot.settings });
+    set({
+      devices: snapshot.devices,
+      transfers: snapshot.transfers,
+      offers: snapshot.offers,
+      settings: snapshot.settings,
+      coreStatus: { connected: true, reconnecting: false },
+    });
+  },
+
+  async init() {
+    // The core lives in a separate process that may still be starting, or may
+    // be mid-restart. Retry rather than leaving the window permanently empty;
+    // the core:status listener below takes over once it is up.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        await get().refresh();
+        break;
+      } catch {
+        set({ coreStatus: { connected: false, reconnecting: true } });
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
 
     api.onEvent('devices:changed', (devices) => set({ devices }));
     api.onEvent('transfer:updated', (t) =>
@@ -55,7 +77,17 @@ export const useStore = create<AppState>((set) => ({
       set((s) => ({ offers: s.offers.filter((o) => o.offerId !== offerId) })),
     );
     api.onEvent('stats:tick', (tick) => set({ statsTick: tick }));
-    api.onEvent('core:status', (status) => set({ coreStatus: status }));
+    api.onEvent('core:status', (status) => {
+      const wasConnected = get().coreStatus.connected;
+      set({ coreStatus: status });
+      // The core runs in its own process and can be restarted under us. The
+      // devices and transfers we are showing belong to the old one, so pull a
+      // fresh snapshot rather than leaving stale rows on screen forever.
+      if (status.connected && !wasConnected) {
+        void get().refresh().catch(() => undefined);
+      }
+      if (!status.connected) set({ devices: [], statsTick: null });
+    });
   },
 
   async sendFiles(deviceId, paths) {

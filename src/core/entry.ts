@@ -16,6 +16,20 @@ interface CallMessage {
 const dataDir = process.env.ETHERTRANSFER_DATA_DIR ?? process.cwd();
 const appVersion = process.env.ETHERTRANSFER_VERSION ?? '0.1.0';
 
+/**
+ * Node terminates on an unhandled rejection by default. In this process that
+ * meant one stray promise - a beacon reply, a dropped connection - killed the
+ * whole core, which the UI saw as every device disappearing and every transfer
+ * stopping at once. Discovery and transfers are both best-effort by nature, so
+ * log and keep running instead.
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[core] unhandled rejection', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[core] uncaught exception', err);
+});
+
 type NodeMessagePort = {
   postMessage(msg: unknown): void;
   on(event: 'message', listener: (msg: { data: unknown }) => void): void;
@@ -53,7 +67,8 @@ parentPort.once('message', async (e) => {
     if (call.kind !== 'call') return;
     try {
       const fn = (core.api as unknown as Record<string, (...a: unknown[]) => unknown>)[call.method];
-      const result = await fn?.(...call.args);
+      if (typeof fn !== 'function') throw new Error(`unknown method: ${call.method}`);
+      const result = await fn(...call.args);
       port.postMessage({ kind: 'result', callId: call.callId, result });
     } catch (err) {
       port.postMessage({ kind: 'result', callId: call.callId, error: String(err) });
