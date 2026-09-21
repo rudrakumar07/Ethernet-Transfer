@@ -14,16 +14,21 @@ export function TransferBar({ onOpenTransfers }: { onOpenTransfers: () => void }
   const fraction = top.totalBytes ? top.bytesDone / top.totalBytes : 0;
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 border-t border-neutral-200 dark:border-neutral-700 text-xs cursor-pointer"
-      onClick={onOpenTransfers}>
-      <span>{top.direction === 'send' ? '⬆' : '⬇'} {top.fileCount} file(s) {top.direction === 'send' ? '→' : '←'} <b>{top.deviceName}</b></span>
-      <div className="flex-1"><ProgressBar fraction={scanning ? 0 : fraction} /></div>
-      <span>
+    <div
+      className="flex items-center gap-3 px-5 py-2.5 border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-xs cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/60 transition-colors"
+      onClick={onOpenTransfers}
+    >
+      <span className="truncate shrink-0">
+        <span aria-hidden>{top.direction === 'send' ? '↑' : '↓'}</span> {top.fileCount.toLocaleString()} file(s){' '}
+        {top.direction === 'send' ? 'to' : 'from'} <b>{top.deviceName}</b>
+      </span>
+      <div className="flex-1 min-w-0"><ProgressBar fraction={fraction} indeterminate={scanning} /></div>
+      <span className="shrink-0 tabular-nums text-neutral-500">
         {scanning
           ? 'Scanning folder…'
-          : `${Math.round(fraction * 100)}% · ${(top.speedBps / 1e6).toFixed(0)} MB/s`}
+          : `${Math.round(fraction * 100)}% · ${(top.speedBps / 1e6).toFixed(1)} MB/s`}
       </span>
-      {active.length > 1 && <span className="text-neutral-400">+{active.length - 1} more</span>}
+      {active.length > 1 && <span className="text-neutral-400 shrink-0">+{active.length - 1} more</span>}
       {!scanning && (
         <Button variant="ghost" onClick={(e) => {
           e.stopPropagation();

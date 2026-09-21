@@ -1,4 +1,4 @@
-import { app, ipcMain, Notification } from 'electron';
+import { app, ipcMain, Menu, Notification } from 'electron';
 import { createMainWindow } from './window';
 import { createTray } from './tray';
 import { createMainCommands } from './dialogs';
@@ -12,6 +12,17 @@ const CORE_COMMAND_METHODS = [
 ];
 
 app.whenReady().then(() => {
+  // Electron installs a stock File/Edit/View/Window/Help menu, which has no
+  // place in this app. macOS still needs one, or the standard clipboard and
+  // quit shortcuts stop working.
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]),
+    );
+  } else {
+    Menu.setApplicationMenu(null);
+  }
+
   const win = createMainWindow();
   const tray = createTray(win);
   const mainCommands = createMainCommands(win);
