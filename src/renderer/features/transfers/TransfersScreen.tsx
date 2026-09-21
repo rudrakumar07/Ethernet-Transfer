@@ -4,7 +4,10 @@ import { api } from '../../api/bridge';
 import { ProgressBar, Button } from '../../components/ui';
 import type { TransferSnapshot } from '../../../shared/types';
 
-const ACTIVE_STATUSES = new Set(['queued', 'awaiting-accept', 'active', 'paused', 'interrupted']);
+const ACTIVE_STATUSES = new Set(['scanning', 'queued', 'awaiting-accept', 'active', 'paused', 'interrupted']);
+
+/** Cap on per-file rows drawn in an expanded transfer. */
+const FILE_ROWS_SHOWN = 200;
 
 function formatBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
@@ -14,16 +17,24 @@ function formatBytes(n: number): string {
 
 function TransferRow({ t }: { t: TransferSnapshot }) {
   const [expanded, setExpanded] = useState(false);
+  const scanning = t.status === 'scanning';
   const fraction = t.totalBytes ? t.bytesDone / t.totalBytes : 0;
   return (
     <div className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-2 text-xs">
       <div className="flex items-center gap-2 cursor-pointer" onClick={() => setExpanded((v) => !v)}>
         <span>{t.direction === 'send' ? '⬆' : '⬇'}</span>
         <span className="font-semibold">{t.deviceName}</span>
-        <span className="text-neutral-500">{t.fileCount} file(s) · {formatBytes(t.totalBytes)}</span>
+        <span className="text-neutral-500">
+          {scanning
+            ? `Scanning… ${t.fileCount.toLocaleString()} file(s), ${formatBytes(t.totalBytes)} so far`
+            : `${t.fileCount} file(s) · ${formatBytes(t.totalBytes)}`}
+        </span>
         <span className="ml-auto capitalize">{t.status}</span>
       </div>
-      <div className="mt-1"><ProgressBar fraction={fraction} /></div>
+      {t.error && <div className="mt-1 text-[11px] text-red-600 dark:text-red-400">{t.error}</div>}
+      <div className="mt-1">
+        {scanning ? <IndeterminateBar /> : <ProgressBar fraction={fraction} />}
+      </div>
       <div className="flex gap-2 mt-1">
         {t.status === 'active' && <Button variant="ghost" onClick={() => api.core.pauseTransfer(t.id)}>Pause</Button>}
         {(t.status === 'paused' || t.status === 'interrupted') && (
@@ -35,14 +46,35 @@ function TransferRow({ t }: { t: TransferSnapshot }) {
       </div>
       {expanded && (
         <div className="mt-2 border-t border-neutral-200 dark:border-neutral-700 pt-2 space-y-1">
-          {t.files.map((f) => (
+          {/* A folder can hold tens of thousands of files; rendering a row for
+              every one of them would lock up the window. */}
+          {t.files.slice(0, FILE_ROWS_SHOWN).map((f) => (
             <div key={f.item.index} className="flex justify-between">
               <span className="truncate">{f.item.relPath}</span>
               <span className={f.status === 'failed' ? 'text-red-500' : ''}>{f.status}{f.reason ? ` (${f.reason})` : ''}</span>
             </div>
           ))}
+          {t.files.length > FILE_ROWS_SHOWN && (
+            <div className="text-neutral-500 pt-1">
+              …and {(t.files.length - FILE_ROWS_SHOWN).toLocaleString()} more file(s)
+            </div>
+          )}
+          {t.files.some((f) => f.status === 'failed') && (
+            <div className="pt-1 text-red-500">
+              {t.files.filter((f) => f.status === 'failed').length.toLocaleString()} file(s) failed
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A folder walk has no percentage to report until it finishes. */
+function IndeterminateBar() {
+  return (
+    <div className="h-1.5 bg-neutral-200 dark:bg-neutral-700 rounded-full overflow-hidden">
+      <div className="h-full w-1/3 bg-blue-500 rounded-full animate-pulse" />
     </div>
   );
 }

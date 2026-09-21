@@ -14,7 +14,19 @@ export function createMainCommands(win: BrowserWindow): MainCommandsHandle {
       minimizeToTray = enabled;
     },
     async pickFiles() {
-      const result = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] });
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Choose files to send',
+        buttonLabel: 'Send',
+        properties: ['openFile', 'multiSelections'],
+      });
+      return result.canceled ? [] : result.filePaths;
+    },
+    async pickFolders() {
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Choose folders to send',
+        buttonLabel: 'Send',
+        properties: ['openDirectory', 'multiSelections'],
+      });
       return result.canceled ? [] : result.filePaths;
     },
     async pickFolder() {

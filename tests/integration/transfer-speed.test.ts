@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHarness } from '../fakes/service-harness';
 import { createSocketPair } from '../fakes/socket-pair';
-import { testHello } from '../fakes/hello';
+import { helloFrame } from '../fakes/hello';
 import { FrameType, encodeControlFrame } from '../../src/shared/protocol';
 import type { TransferSnapshot } from '../../src/shared/types';
 
@@ -22,7 +22,7 @@ describe('transfer speed reporting', () => {
     h.service.events.on('updated', (t) => updates.push({ ...t }));
 
     const peer = h.acceptConnection(createSocketPair(), PEER_FP);
-    peer.write(encodeControlFrame(FrameType.HELLO, { ...testHello('peer'), protocolVersion: 1 }));
+    peer.write(helloFrame('peer'));
     peer.write(
       encodeControlFrame(FrameType.OFFER, {
         transferId: 'tx-speed',
@@ -43,7 +43,7 @@ describe('transfer speed reporting', () => {
     peer.write(Buffer.concat([header, burst]));
     await new Promise((r) => setTimeout(r, 60));
     peer.write(Buffer.concat([header, burst]));
-    await new Promise((r) => setTimeout(r, 40));
+    await new Promise((r) => setTimeout(r, 200));
 
     const latest = updates[updates.length - 1];
     expect(latest.bytesDone).toBe(200_000);

@@ -31,6 +31,10 @@ export interface CoreCommands {
 /** Commands sent renderer -> main (OS-only concerns). */
 export interface MainCommands {
   pickFiles(): Promise<string[]>;
+  /** Folders chosen for sending. Separate from pickFolder because Windows and
+   *  Linux cannot offer files and directories in one native dialog. */
+  pickFolders(): Promise<string[]>;
+  /** A single folder, used for the download location. */
   pickFolder(): Promise<string | null>;
   showInFolder(path: string): Promise<void>;
   setStartOnLogin(enabled: boolean): Promise<void>;

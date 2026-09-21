@@ -21,6 +21,7 @@ app.whenReady().then(() => {
     ipcMain.handle(`core:${method}`, (_e, ...args) => core.call(method, args));
   }
   ipcMain.handle('main:pickFiles', () => mainCommands.pickFiles());
+  ipcMain.handle('main:pickFolders', () => mainCommands.pickFolders());
   ipcMain.handle('main:pickFolder', () => mainCommands.pickFolder());
   ipcMain.handle('main:showInFolder', (_e, p: string) => mainCommands.showInFolder(p));
   ipcMain.handle('main:setStartOnLogin', (_e, enabled: boolean) => mainCommands.setStartOnLogin(enabled));

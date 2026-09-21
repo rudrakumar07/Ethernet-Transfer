@@ -22,9 +22,31 @@ export const FrameType = {
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType];
 
-export const PROTOCOL_VERSION = 1;
+/**
+ * Bumped to 2 when manifests got their own frame ceiling (see
+ * MAX_MANIFEST_PAYLOAD). A v1 peer would reject a large OFFER as
+ * frame-too-large and drop the connection; the version check turns that into
+ * the clear "update EtherTransfer on the other device" message instead.
+ */
+export const PROTOCOL_VERSION = 2;
 export const MAX_CONTROL_PAYLOAD = 1 * 1024 * 1024; // 1 MiB
 export const CHUNK_SIZE = 1 * 1024 * 1024; // 1 MiB
+
+/**
+ * Ceiling for frames carrying a whole item manifest (OFFER).
+ *
+ * Sending a folder puts every item in one frame, and a folder of ~8,000 files
+ * already produces a manifest over 1 MiB - so against the flat control limit
+ * any real photo or project folder failed to send at all. 16 MiB is roughly
+ * 130,000 files; past that buildFileList refuses with a message a person can
+ * act on rather than a raw protocol error.
+ */
+export const MAX_MANIFEST_PAYLOAD = 16 * 1024 * 1024;
+
+/** Frames whose payload is an item manifest rather than a small control message. */
+export function maxPayloadFor(type: FrameTypeValue): number {
+  return type === FrameType.OFFER ? MAX_MANIFEST_PAYLOAD : MAX_CONTROL_PAYLOAD;
+}
 
 export const helloSchema = z.object({
   protocolVersion: z.number().int(),
@@ -96,7 +118,7 @@ export const errorSchema = z.object({
 /** Encode a control frame (JSON payload) as [type][len][json bytes]. */
 export function encodeControlFrame(type: FrameTypeValue, payload: unknown): Buffer {
   const json = Buffer.from(JSON.stringify(payload), 'utf8');
-  if (json.byteLength > MAX_CONTROL_PAYLOAD) {
+  if (json.byteLength > maxPayloadFor(type)) {
     throw new Error('frame-too-large');
   }
   const header = Buffer.alloc(5);

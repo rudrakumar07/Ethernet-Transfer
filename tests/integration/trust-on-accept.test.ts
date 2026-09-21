@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHarness } from '../fakes/service-harness';
 import { createSocketPair } from '../fakes/socket-pair';
-import { testHello } from '../fakes/hello';
+import { helloFrame } from '../fakes/hello';
 import { FrameType, encodeControlFrame } from '../../src/shared/protocol';
 
 const PEER_FP = 'peer-fingerprint-abc';
@@ -23,7 +23,7 @@ describe('trusting a device from the offer prompt', () => {
     });
 
     const peer = h.acceptConnection(createSocketPair(), PEER_FP);
-    peer.write(encodeControlFrame(FrameType.HELLO, { ...testHello('peer'), protocolVersion: 1 }));
+    peer.write(helloFrame('peer'));
     peer.write(
       encodeControlFrame(FrameType.OFFER, {
         transferId: 'tx-1',
@@ -53,7 +53,7 @@ describe('trusting a device from the offer prompt', () => {
     const fromService: number[] = [];
     peer.on('data', (c: Buffer) => fromService.push(c.readUInt8(0)));
 
-    peer.write(encodeControlFrame(FrameType.HELLO, { ...testHello('peer'), protocolVersion: 1 }));
+    peer.write(helloFrame('peer'));
     peer.write(
       encodeControlFrame(FrameType.OFFER, {
         transferId: 'tx-2',

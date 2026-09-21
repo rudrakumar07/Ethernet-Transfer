@@ -1,12 +1,9 @@
-import { MAX_CONTROL_PAYLOAD, FrameType, type FrameTypeValue } from '../../../shared/protocol';
+import { MAX_MANIFEST_PAYLOAD, maxPayloadFor, type FrameTypeValue } from '../../../shared/protocol';
 
 export interface DecodedFrame {
   type: FrameTypeValue;
   payload: Buffer;
 }
-
-/** Largest DATA payload accepted; matches the sender's CHUNK_SIZE ceiling. */
-const MAX_DATA_PAYLOAD = MAX_CONTROL_PAYLOAD;
 
 /**
  * Incremental frame decoder for the [type:1][length:4][payload] wire format.
@@ -29,8 +26,9 @@ export class FrameDecoder {
       const header = this.peek(5);
       const type = header.readUInt8(0) as FrameTypeValue;
       const length = header.readUInt32BE(1);
-      const maxAllowed = type === FrameType.DATA ? MAX_DATA_PAYLOAD : MAX_CONTROL_PAYLOAD;
-      if (length > maxAllowed) {
+      // Manifests are allowed to be much larger than ordinary control frames;
+      // everything else stays at the tight limit.
+      if (length > maxPayloadFor(type)) {
         throw new Error('frame-too-large');
       }
       if (this.buffered < 5 + length) break;
@@ -48,6 +46,7 @@ export class FrameDecoder {
    * the receiver's bottleneck on a fast link.
    */
   private peek(n: number): Buffer {
+    void MAX_MANIFEST_PAYLOAD;
     if (this.chunks.length === 1) return this.chunks[0];
     if (!this.joined || this.joined.length < n) {
       this.joined = Buffer.concat(this.chunks, this.buffered);

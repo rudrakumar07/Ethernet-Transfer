@@ -22,7 +22,9 @@ export function App() {
   const transfers = useStore((s) => s.transfers);
   const coreStatus = useStore((s) => s.coreStatus);
   useApplyTheme();
-  const activeCount = transfers.filter((t) => t.status === 'active' || t.status === 'paused').length;
+  const activeCount = transfers.filter(
+    (t) => t.status === 'active' || t.status === 'paused' || t.status === 'scanning',
+  ).length;
 
   useEffect(() => {
     void init();

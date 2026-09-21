@@ -14,6 +14,7 @@ for (const method of CORE_COMMAND_METHODS) {
 
 const main = {
   pickFiles: () => ipcRenderer.invoke('main:pickFiles'),
+  pickFolders: () => ipcRenderer.invoke('main:pickFolders'),
   pickFolder: () => ipcRenderer.invoke('main:pickFolder'),
   showInFolder: (path: string) => ipcRenderer.invoke('main:showInFolder', path),
   setStartOnLogin: (enabled: boolean) => ipcRenderer.invoke('main:setStartOnLogin', enabled),

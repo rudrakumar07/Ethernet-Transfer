@@ -2,6 +2,7 @@ import type { TransferStatus } from '../../../shared/types';
 
 /** Allowed transfer state transitions (spec §5.9). */
 const ALLOWED: Record<TransferStatus, TransferStatus[]> = {
+  scanning: ['queued', 'failed', 'cancelled'],
   queued: ['awaiting-accept', 'active', 'cancelled', 'failed'],
   'awaiting-accept': ['active', 'declined', 'cancelled'],
   active: ['paused', 'interrupted', 'completed', 'completed-with-errors', 'cancelled', 'failed'],
@@ -10,7 +11,7 @@ const ALLOWED: Record<TransferStatus, TransferStatus[]> = {
   completed: [],
   'completed-with-errors': [],
   declined: [],
-  failed: ['queued'],
+  failed: ['queued', 'scanning'],
   cancelled: [],
 };
 

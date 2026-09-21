@@ -56,7 +56,9 @@ describe('FrameDecoder', () => {
   });
 
   it('rejects an oversized control payload at encode time', () => {
+    // OFFER carries item manifests and has its own, larger ceiling - see
+    // manifest-limits.test.ts. Ordinary control frames stay tight.
     const huge = { blob: 'x'.repeat(MAX_CONTROL_PAYLOAD + 10) };
-    expect(() => encodeControlFrame(FrameType.OFFER, huge)).toThrow();
+    expect(() => encodeControlFrame(FrameType.ACCEPT, huge)).toThrow('frame-too-large');
   });
 });

@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { createHarness } from '../fakes/service-harness';
 import { createSocketPair } from '../fakes/socket-pair';
-import { testHello } from '../fakes/hello';
+import { helloFrame } from '../fakes/hello';
 import { FrameType, encodeControlFrame } from '../../src/shared/protocol';
 
 const PEER_FP = 'peer-fingerprint-abc';
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
 function openOffer(peer: ReturnType<typeof createSocketPair>[1], transferId: string) {
-  peer.write(encodeControlFrame(FrameType.HELLO, { ...testHello('peer'), protocolVersion: 1 }));
+  peer.write(helloFrame('peer'));
   peer.write(
     encodeControlFrame(FrameType.OFFER, {
       transferId,
@@ -69,7 +69,7 @@ describe('inbound transfer terminal states', () => {
 
     const pair = createSocketPair();
     const peer = h.acceptConnection(pair, PEER_FP);
-    peer.write(encodeControlFrame(FrameType.HELLO, { ...testHello('peer'), protocolVersion: 1 }));
+    peer.write(helloFrame('peer'));
     peer.write(
       encodeControlFrame(FrameType.OFFER, {
         transferId: 'tx-done',

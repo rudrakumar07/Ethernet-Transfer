@@ -38,6 +38,7 @@ export function createHarness(
     isTrusted?: (fp: string) => boolean;
     connect?: TlsTransport['connect'];
     items?: TransferItem[];
+    buildFileList?: TransferDeps['buildFileList'];
   } = {},
 ): Harness {
   const fs = createFakeFileSystem();
@@ -99,12 +100,14 @@ export function createHarness(
       start: () => {}, stop: () => {},
     },
     logger: createSilentLogger(),
-    buildFileList: async (paths) => {
-      const items: TransferItem[] = overrides.items ?? paths.map((p, i) => ({
-        index: i, relPath: `file${i}.bin`, kind: 'file', size: 9, mtimeMs: 1,
-      }));
-      return Object.assign(items, { sources: new Map(items.map((it, i) => [it.index, paths[i] ?? paths[0]])) });
-    },
+    buildFileList:
+      overrides.buildFileList ??
+      (async (paths) => {
+        const items: TransferItem[] = overrides.items ?? paths.map((p, i) => ({
+          index: i, relPath: `file${i}.bin`, kind: 'file', size: 9, mtimeMs: 1,
+        }));
+        return Object.assign(items, { sources: new Map(items.map((it, i) => [it.index, paths[i] ?? paths[0]])) });
+      }),
   };
 
   const service = createTransferService(deps);

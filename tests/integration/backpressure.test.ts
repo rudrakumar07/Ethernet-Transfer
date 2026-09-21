@@ -3,7 +3,7 @@ import { runSenderSession } from '../../src/core/transfer/session/sender-session
 import { createFakeFileSystem } from '../fakes/filesystem';
 import { createSilentLogger } from '../fakes/logger';
 import { createSocketPair } from '../fakes/socket-pair';
-import { testHello } from '../fakes/hello';
+import { helloFrame, testHello } from '../fakes/hello';
 import { FrameType, encodeControlFrame } from '../../src/shared/protocol';
 import type { TransferItem } from '../../src/shared/types';
 
@@ -34,7 +34,7 @@ describe('sender backpressure', () => {
     // it sees FILE_END. It never reads eagerly - draining is driven below.
     peer.on('data', (chunk: Buffer) => {
       if (chunk.length >= 5 && chunk.readUInt8(0) === FrameType.HELLO) {
-        peer.write(encodeControlFrame(FrameType.HELLO, { ...testHello('peer'), protocolVersion: 1 }));
+        peer.write(helloFrame('peer'));
       }
       if (chunk.length >= 5 && chunk.readUInt8(0) === FrameType.OFFER) {
         peer.write(encodeControlFrame(FrameType.ACCEPT, { offsets: {} }));

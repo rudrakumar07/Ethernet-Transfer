@@ -24,6 +24,7 @@ import { createSessionControl, type SessionControl } from './session/control';
 import { endGracefully } from './protocol/flow-control';
 import { canTransition } from './logic/transitions';
 import { isValidRelPath } from './logic/path-validator';
+import { MAX_ITEMS_PER_TRANSFER } from './build-file-list';
 
 export interface TransferEvents {
   updated: TransferSnapshot;
@@ -58,7 +59,10 @@ export interface TransferDeps {
   settings: SettingsService;
   stats: StatsService;
   logger: Logger;
-  buildFileList: (absolutePaths: string[]) => Promise<TransferItem[] & { sources: Map<number, string> }>;
+  buildFileList: (
+    absolutePaths: string[],
+    options?: { onProgress?: (filesScanned: number, bytesScanned: number) => void },
+  ) => Promise<TransferItem[] & { sources: Map<number, string> }>;
 }
 
 const MAX_CONCURRENT_PER_DIRECTION = 3;
@@ -67,6 +71,19 @@ const OFFER_TIMEOUT_MS = 60_000;
 
 const BUSY_RETRY_DELAY_MS = 10_000;
 const BUSY_RETRY_MAX_ATTEMPTS = 5;
+
+/**
+ * Progress updates are coalesced into at most one event per this interval.
+ *
+ * Every DATA chunk used to emit a full snapshot. On a 20,000-file folder that
+ * was ~60,000 events, each carrying the whole 20,000-entry files array: the
+ * core process became CPU-bound on serialisation, the window stopped
+ * responding, and the transfer itself stalled part-way through.
+ */
+const UPDATE_COALESCE_MS = 120;
+
+/** Above this many files, progress events carry aggregates only. */
+const FILES_INLINE_LIMIT = 200;
 
 /** Minimum gap between speed samples; shorter windows are mostly jitter. */
 const SPEED_SAMPLE_MS = 50;
@@ -85,6 +102,8 @@ interface InternalTransfer {
   destinationRoot?: string;
   /** Certificate fingerprint of the peer on the connection that carried this transfer. */
   peerFingerprint?: string;
+  /** The files and folders originally chosen, so a failed scan can be rescanned. */
+  sourcePaths?: string[];
   speed?: SpeedSampler;
   /** Set while a connection for this transfer is actually live; lets pause()/cancel() take effect immediately. */
   control?: SessionControl;
@@ -109,9 +128,33 @@ export function createTransferService(deps: TransferDeps): TransferService {
   let serverPort = 0;
   let server: { port: number; close(): Promise<void> } | undefined;
 
-  function emitUpdate(t: InternalTransfer) {
+  const pendingEmits = new Map<TransferId, NodeJS.Timeout>();
+
+  function cancelPendingEmit(id: TransferId) {
+    const timer = pendingEmits.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      pendingEmits.delete(id);
+    }
+  }
+
+  /** Emits straight away. `full` forces the per-file array to be included. */
+  function emitNow(t: InternalTransfer, full: boolean) {
+    cancelPendingEmit(t.snapshot.id);
     t.snapshot.updatedAt = Date.now();
-    events.emit('updated', t.snapshot);
+    const omitFiles = !full && t.snapshot.files.length > FILES_INLINE_LIMIT;
+    events.emit('updated', omitFiles ? { ...t.snapshot, files: [], filesOmitted: true } : t.snapshot);
+  }
+
+  /** Coalesced: rapid progress collapses into one trailing event per interval. */
+  function emitUpdate(t: InternalTransfer) {
+    if (pendingEmits.has(t.snapshot.id)) return;
+    const timer = setTimeout(() => {
+      pendingEmits.delete(t.snapshot.id);
+      emitNow(t, false);
+    }, UPDATE_COALESCE_MS);
+    timer.unref?.();
+    pendingEmits.set(t.snapshot.id, timer);
   }
 
   /**
@@ -158,7 +201,8 @@ export function createTransferService(deps: TransferDeps): TransferService {
       logger.warn('invalid transfer transition', { from: t.snapshot.status, to: status });
     }
     t.snapshot.status = status;
-    emitUpdate(t);
+    // A status change is never delayed or trimmed: it is what the UI keys off.
+    emitNow(t, true);
   }
 
   function fileState(t: InternalTransfer, index: number): TransferFileState | undefined {
@@ -224,6 +268,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
     // turns out to carry as soon as OFFER/RESUME tells us (below).
     const connectionControl = createSessionControl();
     let peerCancelled = false;
+    let peerDone = false;
 
     await runReceiverSession(conn.socket as never, {
       fs,
@@ -233,6 +278,9 @@ export function createTransferService(deps: TransferDeps): TransferService {
       hello: { appVersion: platform.appVersion(), deviceId: identity.deviceId, name: identity.name, os: identity.os },
       onPeerCancelled: () => {
         peerCancelled = true;
+      },
+      onPeerDone: () => {
+        peerDone = true;
       },
       onResumeRequest: (transferId) => {
         // The peer (a receiver of ours) is asking us to reconnect and resume
@@ -360,9 +408,17 @@ export function createTransferService(deps: TransferDeps): TransferService {
       t.snapshot.speedBps = 0;
       t.snapshot.etaSeconds = undefined;
       t.speed = undefined;
-      // A cancel discards the partial file; a dropped link keeps it so the
-      // transfer can pick up where it left off.
-      setStatus(t, peerCancelled ? 'cancelled' : 'interrupted');
+      if (peerCancelled) {
+        // A cancel discards the partial file; a dropped link keeps it so the
+        // transfer can pick up where it left off.
+        setStatus(t, 'cancelled');
+      } else if (peerDone && t.snapshot.files.length === 0) {
+        // A folder that contains only folders has nothing to verify - it is
+        // finished once the directories exist, not stuck waiting for files.
+        setStatus(t, 'completed');
+      } else {
+        setStatus(t, 'interrupted');
+      }
     }
     if (t?.control === connectionControl) t.control = undefined;
   }
@@ -379,6 +435,41 @@ export function createTransferService(deps: TransferDeps): TransferService {
     setStatus(t, anyFailed ? 'completed-with-errors' : 'completed');
     const linkType = discovery.getDevice(t.snapshot.deviceId)?.linkType ?? 'wired';
     stats.recordDeviceBytes(t.snapshot.deviceId, t.snapshot.deviceName, linkType, t.snapshot.bytesDone);
+  }
+
+  /** Walks the chosen paths into this transfer's manifest, reporting progress. */
+  async function scanInto(t: InternalTransfer, absolutePaths: string[]) {
+    try {
+      const built = await deps.buildFileList(absolutePaths, {
+        onProgress: (filesScanned, bytesScanned) => {
+          t.snapshot.fileCount = filesScanned;
+          t.snapshot.totalBytes = bytesScanned;
+          emitUpdate(t);
+        },
+      });
+      const items: TransferItem[] = built.map(({ index, relPath, kind, size, mtimeMs }) => ({
+        index,
+        relPath,
+        kind,
+        size,
+        mtimeMs,
+      }));
+      const files = items.filter((i) => i.kind === 'file');
+      t.items = items;
+      t.sources = built.sources;
+      t.snapshot.fileCount = files.length;
+      t.snapshot.totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+      t.snapshot.files = files.map((item) => ({ item, status: 'queued', bytesDone: 0 }));
+      setStatus(t, 'queued');
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      t.snapshot.error =
+        reason === 'too-many-files'
+          ? `That folder has more than ${MAX_ITEMS_PER_TRANSFER.toLocaleString()} items - send it in smaller parts`
+          : reason;
+      setStatus(t, 'failed');
+      throw err;
+    }
   }
 
   async function runSend(t: InternalTransfer, device: Device) {
@@ -459,6 +550,11 @@ export function createTransferService(deps: TransferDeps): TransferService {
           emitUpdate(t);
         },
       });
+      // A folder with no files inside it completes as soon as the manifest has
+      // been delivered; there are no files to mark verified.
+      if (t.snapshot.files.length === 0 && !control.isAborted() && t.snapshot.status === 'active') {
+        setStatus(t, 'completed');
+      }
       // Not awaited: the send slot is free as soon as the session is done, and
       // the flush only needs to outlive this function, not block the queue.
       void endGracefully(conn.socket as never, () => conn.close());
@@ -484,35 +580,32 @@ export function createTransferService(deps: TransferDeps): TransferService {
       const device = discovery.getDevice(deviceId);
       if (!device) throw new Error('device-not-found');
 
-      const built = await deps.buildFileList(absolutePaths);
-      const items: TransferItem[] = built.map(({ index, relPath, kind, size, mtimeMs }) => ({
-        index,
-        relPath,
-        kind,
-        size,
-        mtimeMs,
-      }));
       const transferId = randomUUID();
-      const files = items.filter((i) => i.kind === 'file');
-      const totalBytes = files.reduce((s, f) => s + f.size, 0);
-
-      const snapshot: TransferSnapshot = {
-        id: transferId,
-        direction: 'send',
-        deviceId,
-        deviceName: device.name,
-        status: 'queued',
-        totalBytes,
-        bytesDone: 0,
-        fileCount: files.length,
-        speedBps: 0,
-        files: files.map((item) => ({ item, status: 'queued', bytesDone: 0 })),
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+      // The transfer exists before the walk does. Scanning a large folder takes
+      // real time, and without a record to show, picking one looked like
+      // nothing had happened at all.
+      const internal: InternalTransfer = {
+        snapshot: {
+          id: transferId,
+          direction: 'send',
+          deviceId,
+          deviceName: device.name,
+          status: 'scanning',
+          totalBytes: 0,
+          bytesDone: 0,
+          fileCount: 0,
+          speedBps: 0,
+          files: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        items: [],
+        sourcePaths: absolutePaths,
       };
-      const internal: InternalTransfer = { snapshot, items, sources: built.sources };
       transfers.set(transferId, internal);
-      emitUpdate(internal);
+      emitNow(internal, true);
+
+      await scanInto(internal, absolutePaths);
       // Starts immediately if a slot is free, otherwise waits in the queue
       // (spec §5.8: at most 3 concurrent outbound transfers).
       processSendQueue();
@@ -573,6 +666,16 @@ export function createTransferService(deps: TransferDeps): TransferService {
     async retry(id) {
       const t = transfers.get(id);
       if (!t || t.snapshot.direction !== 'send') return;
+      if (t.items.length === 0) {
+        // The scan itself failed, so there is no manifest to resend - walk the
+        // originally chosen paths again rather than offering an empty transfer.
+        if (!t.sourcePaths?.length) return;
+        t.snapshot.error = undefined;
+        setStatus(t, 'scanning');
+        await scanInto(t, t.sourcePaths).catch(() => undefined);
+        processSendQueue();
+        return;
+      }
       // A retry starts over from a fresh OFFER. Going straight to runSend left
       // the status at 'failed', which made it send RESUME instead - and the
       // receiver, having no record of that transfer, replied unknown-transfer.
@@ -596,6 +699,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
       // Dropping the record without stopping the session left it running
       // invisibly, still writing bytes with nowhere to report them.
       t?.control?.requestCancel();
+      cancelPendingEmit(id);
       transfers.delete(id);
     },
 
@@ -623,6 +727,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
     },
 
     async stop() {
+      for (const id of Array.from(pendingEmits.keys())) cancelPendingEmit(id);
       for (const t of transfers.values()) t.control?.requestCancel();
       await server?.close();
       server = undefined;

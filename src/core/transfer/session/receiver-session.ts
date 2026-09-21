@@ -50,6 +50,8 @@ export interface ReceiverSessionDeps {
    * simply ending, which is reported by the session returning normally.
    */
   onPeerCancelled?: () => void;
+  /** The peer signalled DONE: every item it meant to send has been sent. */
+  onPeerDone?: () => void;
   /** When set, a local Pause/Cancel request stops accepting data immediately. */
   control?: SessionControl;
   /** This device's identity for the HELLO handshake (spec §5.2). */
@@ -85,6 +87,7 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
     onResume,
     onResumeRequest,
     onPeerCancelled,
+    onPeerDone,
     control,
     hello,
   } = deps;
@@ -292,6 +295,7 @@ export async function runReceiverSession(socket: Duplex, deps: ReceiverSessionDe
         }
 
         case FrameType.DONE:
+          onPeerDone?.();
           socket.end();
           return;
 

@@ -13,12 +13,15 @@ interface AppState {
   coreStatus: CoreStatus;
   selectedDeviceId: string | null;
   rightPanelMode: 'network' | 'device';
+  /** Last send failure, shown to the user; sends used to fail silently. */
+  sendError: string | null;
 
   selectDevice: (id: string | null) => void;
   setRightPanelMode: (mode: 'network' | 'device') => void;
   init: () => Promise<void>;
   refresh: () => Promise<void>;
   sendFiles: (deviceId: string, paths: string[]) => Promise<void>;
+  clearSendError: () => void;
   respondToOffer: (offerId: string, accept: boolean, trust: boolean) => Promise<void>;
   fetchStats: (range: '15m' | '1h' | '24h') => Promise<StatsSnapshot>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
@@ -33,9 +36,11 @@ export const useStore = create<AppState>((set, get) => ({
   coreStatus: { connected: false, reconnecting: false },
   selectedDeviceId: null,
   rightPanelMode: 'network',
+  sendError: null,
 
   selectDevice: (id) => set({ selectedDeviceId: id, rightPanelMode: id ? 'device' : 'network' }),
   setRightPanelMode: (mode) => set({ rightPanelMode: mode }),
+  clearSendError: () => set({ sendError: null }),
 
   async refresh() {
     const snapshot = await api.core.getSnapshot();
@@ -67,8 +72,13 @@ export const useStore = create<AppState>((set, get) => ({
       set((s) => {
         const idx = s.transfers.findIndex((x) => x.id === t.id);
         const transfers = [...s.transfers];
-        if (idx >= 0) transfers[idx] = t;
-        else transfers.unshift(t);
+        const previous = idx >= 0 ? transfers[idx] : undefined;
+        // Progress events for a large transfer leave the per-file array out to
+        // keep the payload small; hold on to the last one we were given.
+        const next =
+          t.filesOmitted && previous ? { ...t, files: previous.files, filesOmitted: false } : t;
+        if (idx >= 0) transfers[idx] = next;
+        else transfers.unshift(next);
         return { transfers };
       }),
     );
@@ -91,7 +101,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async sendFiles(deviceId, paths) {
-    await api.core.sendFiles(deviceId, paths);
+    // Callers include a drag-drop handler that cannot await, so a rejection
+    // here used to vanish entirely - the user saw nothing happen at all.
+    set({ sendError: null });
+    try {
+      await api.core.sendFiles(deviceId, paths);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ sendError: message.replace(/^Error:\s*/, '') });
+    }
   },
 
   async respondToOffer(offerId, accept, trust) {

@@ -5,6 +5,7 @@ import { createSilentLogger } from '../fakes/logger';
 import { createFakePlatform } from '../fakes/platform';
 import { createSocketPair, type FakeSocket } from '../fakes/socket-pair';
 import { FrameType, encodeControlFrame } from '../../src/shared/protocol';
+import { helloFrame } from '../fakes/hello';
 import type { Device, TransferItem } from '../../src/shared/types';
 import type { TlsConnection, TlsTransport } from '../../src/core/ports';
 
@@ -105,11 +106,7 @@ describe('outbound send queue', () => {
 
     // Finish the first one: reply HELLO then DECLINE, which ends that session.
     const first = pendingPeerSockets[0];
-    first.write(
-      encodeControlFrame(FrameType.HELLO, {
-        protocolVersion: 1, appVersion: '0.1.0', deviceId: 'dev-1', name: 'Peer', os: 'linux',
-      }),
-    );
+    first.write(helloFrame('dev-1'));
     first.write(encodeControlFrame(FrameType.DECLINE, { reason: 'user' }));
 
     await new Promise((r) => setTimeout(r, 20));

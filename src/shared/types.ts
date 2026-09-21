@@ -27,6 +27,8 @@ export interface Device {
 export type TransferDirection = 'send' | 'receive';
 
 export type TransferStatus =
+  /** Walking the selected folders to build the item list, before anything is offered. */
+  | 'scanning'
   | 'queued'
   | 'awaiting-accept'
   | 'active'
@@ -74,6 +76,12 @@ export interface TransferSnapshot {
   speedBps: number;
   etaSeconds?: number;
   files: TransferFileState[];
+  /**
+   * True when `files` was left out of this update to keep the payload small.
+   * Frequent progress events for a large transfer carry aggregates only; the
+   * per-file array arrives on status changes. Consumers keep what they had.
+   */
+  filesOmitted?: boolean;
   createdAt: number;
   updatedAt: number;
   error?: string;
