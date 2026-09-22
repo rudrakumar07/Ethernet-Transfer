@@ -1,48 +1,99 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../store';
-import { Button } from '../../components/ui';
+import { Button, Checkbox, DeviceIcon, FileIcon, FolderIcon } from '../../components/ui';
+import { formatBytes, LINK_LABEL } from '../../lib/format';
 import type { IncomingOffer } from '../../../shared/types';
 
-function formatBytes(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
-  return `${(n / 1e3).toFixed(0)} KB`;
-}
+/** Items listed in the dialog before collapsing the rest into a count. */
+const ITEMS_SHOWN = 8;
 
 function OneOffer({ offer }: { offer: IncomingOffer }) {
   const respond = useStore((s) => s.respondToOffer);
+  const device = useStore((s) => s.devices.find((d) => d.id === offer.deviceId));
   const [trustDevice, setTrustDevice] = useState(false);
-  const [secondsLeft, setSecondsLeft] = useState(Math.round((offer.expiresAt - Date.now()) / 1000));
+  const [secondsLeft, setSecondsLeft] = useState(Math.max(0, Math.round((offer.expiresAt - Date.now()) / 1000)));
 
   useEffect(() => {
     const t = setInterval(() => setSecondsLeft(Math.max(0, Math.round((offer.expiresAt - Date.now()) / 1000))), 1000);
     return () => clearInterval(t);
   }, [offer.expiresAt]);
 
-  const dirs = offer.items.filter((i) => i.kind === 'dir');
-  const files = offer.items.filter((i) => i.kind === 'file');
+  // Folders first, then files, and an honest count of whatever is left over.
+  // The old list showed at most five of each but only said "and more" past
+  // ten items, so seven files showed five with no hint two were missing.
+  const ordered = [...offer.items.filter((i) => i.kind === 'dir'), ...offer.items.filter((i) => i.kind === 'file')];
+  const shown = ordered.slice(0, ITEMS_SHOWN);
+  const hidden = ordered.length - shown.length;
+  const trusted = device?.trusted ?? false;
+  const titleId = `offer-title-${offer.offerId}`;
 
   return (
-    <div className="w-[380px] rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg p-4 text-sm">
-      <div className="font-semibold mb-1">{offer.deviceName} wants to send you files</div>
-      <div className="text-xs text-neutral-500 mb-3">
-        {offer.deviceOs} · {offer.linkType} · not trusted yet · ID {offer.shortId}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      className="w-[460px] max-w-[calc(100vw-32px)] rounded-card border border-stroke bg-card shadow-dialog overflow-hidden"
+    >
+      <div className="p-6">
+        <div className="flex items-start gap-3 mb-4">
+          <span className="w-10 h-10 rounded-control bg-selected text-accent-text flex items-center justify-center shrink-0">
+            <DeviceIcon os={offer.deviceOs} size={22} />
+          </span>
+          <div className="min-w-0">
+            <h2 id={titleId} className="text-[20px] leading-7 font-semibold text-fg">
+              {offer.deviceName} wants to send you files
+            </h2>
+            <p className="text-[12px] text-fg-2 mt-0.5">
+              {LINK_LABEL[offer.linkType]} · {trusted ? 'Trusted' : 'Not trusted'} · ID {offer.shortId}
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-control border border-stroke bg-layer">
+          <ul className="max-h-44 overflow-y-auto divide-y divide-stroke-divider">
+            {shown.map((item) => (
+              <li key={item.index} className="flex items-center gap-2.5 px-3 py-1.5 text-[13px] text-fg">
+                {item.kind === 'dir' ? (
+                  <FolderIcon size={14} className="text-accent-text" />
+                ) : (
+                  <FileIcon size={14} className="text-fg-2" />
+                )}
+                <span className="truncate flex-1">{item.relPath}</span>
+                {item.kind === 'file' && <span className="text-[12px] text-fg-2 tabular-nums">{formatBytes(item.size)}</span>}
+              </li>
+            ))}
+            {hidden > 0 && (
+              <li className="px-3 py-1.5 text-[12px] text-fg-2">…and {hidden.toLocaleString()} more</li>
+            )}
+          </ul>
+          <div className="flex justify-between gap-3 px-3 py-2 border-t border-stroke text-[12px] text-fg-2">
+            <span className="shrink-0 whitespace-nowrap">
+              {offer.fileCount.toLocaleString()} file(s) · <span className="text-fg font-semibold">{formatBytes(offer.totalBytes)}</span>
+            </span>
+            <span className="truncate min-w-0" title={offer.destinationDir}>
+              Save to <span className="font-mono text-fg">{offer.destinationDir}</span>
+            </span>
+          </div>
+        </div>
+
+        {!trusted && (
+          <div className="mt-4">
+            <Checkbox checked={trustDevice} onChange={setTrustDevice} label="Always accept from this device" />
+          </div>
+        )}
       </div>
-      <div className="border rounded-md p-2 mb-3 text-xs space-y-1 max-h-32 overflow-y-auto">
-        {dirs.slice(0, 5).map((d) => <div key={d.index}>{'\u{1F4C1}'} {d.relPath}</div>)}
-        {files.slice(0, 5).map((f) => <div key={f.index}>{'\u{1F4C4}'} {f.relPath}</div>)}
-        {offer.items.length > 10 && <div className="text-neutral-400">…and more</div>}
-        <div className="border-t pt-1 mt-1">Total <b>{formatBytes(offer.totalBytes)}</b> · Save to <b>{offer.destinationDir}</b></div>
-      </div>
-      <label className="flex items-center gap-2 text-xs mb-3">
-        <input type="checkbox" checked={trustDevice} onChange={(e) => setTrustDevice(e.target.checked)} />
-        Always accept from this device (trust it)
-      </label>
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-neutral-400">Auto-declines in {secondsLeft}s</span>
+
+      <div className="flex items-center justify-between gap-3 px-6 py-5 bg-layer border-t border-stroke">
+        <span className="text-[12px] text-fg-2 tabular-nums">Auto-declines in {secondsLeft}s</span>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => respond(offer.offerId, false, false)}>Decline</Button>
-          <Button onClick={() => respond(offer.offerId, true, trustDevice)}>Accept</Button>
+          {/* Decline takes focus: an unexpected offer from an unknown device
+              should not be accepted by a stray Enter. */}
+          <Button autoFocus onClick={() => void respond(offer.offerId, false, false)} className="min-w-[96px]">
+            Decline
+          </Button>
+          <Button variant="accent" onClick={() => void respond(offer.offerId, true, trustDevice)} className="min-w-[96px]">
+            Accept
+          </Button>
         </div>
       </div>
     </div>
@@ -53,10 +104,8 @@ export function OfferPrompt() {
   const offers = useStore((s) => s.offers);
   if (offers.length === 0) return null;
   return (
-    <div className="fixed inset-0 flex items-start justify-center pt-20 pointer-events-none z-50">
-      <div className="pointer-events-auto">
-        <OneOffer offer={offers[0]} />
-      </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <OneOffer key={offers[0].offerId} offer={offers[0]} />
     </div>
   );
 }

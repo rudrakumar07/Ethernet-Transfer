@@ -1,4 +1,5 @@
 import { app, dialog, nativeTheme, shell, type BrowserWindow } from 'electron';
+import fs from 'node:fs/promises';
 import type { MainCommands } from '../shared/ipc-contract';
 
 export interface MainCommandsHandle extends MainCommands {
@@ -6,9 +7,20 @@ export interface MainCommandsHandle extends MainCommands {
   shouldMinimizeToTray(): boolean;
 }
 
-export function createMainCommands(win: BrowserWindow): MainCommandsHandle {
+export function createMainCommands(
+  win: BrowserWindow,
+  deps: { downloadDir: () => Promise<string> },
+): MainCommandsHandle {
   let minimizeToTray = true;
   return {
+    async openDownloadFolder() {
+      // The path comes from the core's settings, never from the renderer, so a
+      // compromised page cannot aim openPath at an arbitrary file or program.
+      const dir = await deps.downloadDir();
+      await fs.mkdir(dir, { recursive: true });
+      const error = await shell.openPath(dir);
+      if (error) throw new Error(error);
+    },
     shouldMinimizeToTray: () => minimizeToTray,
     async setMinimizeToTray(enabled) {
       minimizeToTray = enabled;

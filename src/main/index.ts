@@ -25,8 +25,10 @@ app.whenReady().then(() => {
 
   const win = createMainWindow();
   const tray = createTray(win);
-  const mainCommands = createMainCommands(win);
   const core = createCoreHost();
+  const mainCommands = createMainCommands(win, {
+    downloadDir: async () => (await core.call<{ downloadDir: string }>('getSettings', [])).downloadDir,
+  });
 
   for (const method of CORE_COMMAND_METHODS) {
     ipcMain.handle(`core:${method}`, (_e, ...args) => core.call(method, args));
@@ -38,6 +40,7 @@ app.whenReady().then(() => {
   ipcMain.handle('main:setStartOnLogin', (_e, enabled: boolean) => mainCommands.setStartOnLogin(enabled));
   ipcMain.handle('main:setTheme', (_e, theme: 'system' | 'light' | 'dark') => mainCommands.setTheme(theme));
   ipcMain.handle('main:setMinimizeToTray', (_e, enabled: boolean) => mainCommands.setMinimizeToTray(enabled));
+  ipcMain.handle('main:openDownloadFolder', () => mainCommands.openDownloadFolder());
 
   const forwardedEvents: CoreEventName[] = [
     'devices:changed', 'transfer:updated', 'transfer:removed', 'offer:incoming', 'offer:closed', 'stats:tick', 'core:status',

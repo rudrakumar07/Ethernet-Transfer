@@ -1,10 +1,34 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { api } from '../../api/bridge';
-import { Button, Checkbox, Field, PageHeader, Section, Select, TextInput } from '../../components/ui';
+import {
+  Button,
+  CopyIcon,
+  FolderIcon,
+  PageHeader,
+  PaletteIcon,
+  PowerIcon,
+  Select,
+  SettingsCard,
+  ShieldIcon,
+  TextInput,
+  ToggleSwitch,
+  TrayIcon,
+  UserIcon,
+} from '../../components/ui';
+
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1">
+      <h2 className="text-[14px] font-semibold text-fg mb-1.5">{title}</h2>
+      {children}
+    </section>
+  );
+}
 
 export function SettingsScreen() {
-  const { settings, updateSettings } = useStore();
+  const settings = useStore((s) => s.settings);
+  const updateSettings = useStore((s) => s.updateSettings);
   // Local draft so typing a device name doesn't rewrite settings.json (and
   // re-announce this device over the network) on every single keystroke.
   const [nameDraft, setNameDraft] = useState(settings?.deviceName ?? '');
@@ -26,30 +50,45 @@ export function SettingsScreen() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-5">
-      <div className="max-w-lg">
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="flex flex-col gap-7 px-8 py-7 max-w-4xl">
         <PageHeader title="Settings" />
 
-        <div className="space-y-7">
-          <Section title="Identity">
-            <Field label="Device name" hint="How this machine appears to other devices.">
+        <Group title="Identity">
+          <SettingsCard
+            icon={<UserIcon size={20} />}
+            title="Device name"
+            description="How this machine appears to other devices"
+            control={
               <TextInput
+                aria-label="Device name"
                 value={nameDraft}
                 onChange={(e) => setNameDraft(e.target.value)}
                 onBlur={commitName}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') e.currentTarget.blur();
+                  if (e.key === 'Escape') {
+                    setNameDraft(settings.deviceName);
+                    e.currentTarget.blur();
+                  }
                 }}
+                className="!w-64"
               />
-            </Field>
-          </Section>
+            }
+          />
+        </Group>
 
-          <Section title="Transfers">
-            <Field label="Download folder" hint="Where received files and folders are saved.">
-              <div className="flex gap-2">
-                <TextInput value={settings.downloadDir} readOnly className="flex-1 font-mono text-xs" />
+        <Group title="Transfers">
+          <SettingsCard
+            icon={<FolderIcon size={20} />}
+            title="Download folder"
+            description={<span className="font-mono break-all">{settings.downloadDir}</span>}
+            control={
+              <>
+                <Button variant="subtle" onClick={() => void api.main.openDownloadFolder().catch(() => undefined)}>
+                  Open
+                </Button>
                 <Button
-                  variant="ghost"
                   onClick={async () => {
                     const dir = await api.main.pickFolder();
                     if (dir) await updateSettings({ downloadDir: dir });
@@ -57,54 +96,83 @@ export function SettingsScreen() {
                 >
                   Change
                 </Button>
-              </div>
-            </Field>
-            <Checkbox
-              checked={settings.autoAcceptTrusted}
-              onChange={(checked) => void updateSettings({ autoAcceptTrusted: checked })}
-              label="Auto-accept from trusted devices"
-              hint="Trusted devices can send without asking each time."
-            />
-          </Section>
+              </>
+            }
+          />
+          <SettingsCard
+            icon={<ShieldIcon size={20} />}
+            title="Auto-accept from trusted devices"
+            description="Trusted devices can send without asking each time"
+            control={
+              <ToggleSwitch
+                label="Auto-accept from trusted devices"
+                checked={settings.autoAcceptTrusted}
+                onChange={(checked) => void updateSettings({ autoAcceptTrusted: checked })}
+              />
+            }
+          />
+        </Group>
 
-          <Section title="Appearance">
-            <Field label="Theme">
+        <Group title="Appearance">
+          <SettingsCard
+            icon={<PaletteIcon size={20} />}
+            title="Theme"
+            description="Follow Windows, or always use light or dark"
+            control={
               <Select
+                label="Theme"
                 value={settings.theme}
                 onChange={(theme) => void updateSettings({ theme })}
                 options={[
-                  { value: 'system', label: 'System' },
+                  { value: 'system', label: 'Use system setting' },
                   { value: 'light', label: 'Light' },
                   { value: 'dark', label: 'Dark' },
                 ]}
               />
-            </Field>
-          </Section>
+            }
+          />
+        </Group>
 
-          <Section title="System">
-            <Checkbox
-              checked={settings.startOnLogin}
-              onChange={async (checked) => {
-                await api.main.setStartOnLogin(checked);
-                await updateSettings({ startOnLogin: checked });
-              }}
-              label="Start on login"
-            />
-            <Checkbox
-              checked={settings.minimizeToTray}
-              onChange={async (checked) => {
-                await api.main.setMinimizeToTray(checked);
-                await updateSettings({ minimizeToTray: checked });
-              }}
-              label="Minimize to tray on close"
-              hint="Closing the window keeps EtherTransfer running in the background."
-            />
-          </Section>
+        <Group title="System">
+          <SettingsCard
+            icon={<PowerIcon size={20} />}
+            title="Start on login"
+            description="Open EtherTransfer when you sign in"
+            control={
+              <ToggleSwitch
+                label="Start on login"
+                checked={settings.startOnLogin}
+                onChange={async (checked) => {
+                  await api.main.setStartOnLogin(checked);
+                  await updateSettings({ startOnLogin: checked });
+                }}
+              />
+            }
+          />
+          <SettingsCard
+            icon={<TrayIcon size={20} />}
+            title="Minimize to tray on close"
+            description="Closing the window keeps EtherTransfer running in the background"
+            control={
+              <ToggleSwitch
+                label="Minimize to tray on close"
+                checked={settings.minimizeToTray}
+                onChange={async (checked) => {
+                  await api.main.setMinimizeToTray(checked);
+                  await updateSettings({ minimizeToTray: checked });
+                }}
+              />
+            }
+          />
+        </Group>
 
-          <Section title="Troubleshooting">
-            <div>
+        <Group title="Troubleshooting">
+          <SettingsCard
+            icon={<CopyIcon size={20} />}
+            title="Diagnostics"
+            description="Device and network details for a bug report, with your download path removed"
+            control={
               <Button
-                variant="ghost"
                 onClick={async () => {
                   const diag = await api.core.getDiagnostics();
                   await navigator.clipboard.writeText(diag);
@@ -112,14 +180,11 @@ export function SettingsScreen() {
                   setTimeout(() => setCopied(false), 2000);
                 }}
               >
-                {copied ? 'Copied to clipboard' : 'Copy diagnostics'}
+                {copied ? 'Copied' : 'Copy'}
               </Button>
-              <div className="text-[11px] text-neutral-500 mt-1.5">
-                Device and network details, with your download path removed.
-              </div>
-            </div>
-          </Section>
-        </div>
+            }
+          />
+        </Group>
       </div>
     </div>
   );

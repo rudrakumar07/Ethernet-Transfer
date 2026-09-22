@@ -2,9 +2,108 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Fluent palette, light. Values follow the WinUI 3 defaults closely, with the
+   tertiary text darkened so it still clears 4.5:1 on cards. */
+:root {
+  --shell: #f3f3f3;
+  --layer: #f9f9f9;
+  --card: #ffffff;
+  --card-hover: #f6f6f6;
+  --subtle-hover: #eaeaea;
+  --subtle-pressed: #e4e4e4;
+  --control: #ffffff;
+  --control-hover: #f9f9f9;
+  --control-stroke: #e0e0e0;
+  --control-stroke-strong: #c4c4c4;
+  --stroke: #e5e5e5;
+  --divider: #eeeeee;
+  --fg: #1b1b1b;
+  --fg-2: #5f5f5f;
+  --fg-3: #6b6b6b;
+  --accent: #0067c0;
+  --accent-hover: #1975c5;
+  --accent-text: #005fb8;
+  --on-accent: #ffffff;
+  --selected: #e9f2fb;
+  --success: #0f7b0f;
+  --success-bg: #dff6dd;
+  --caution: #8a5a00;
+  --caution-bg: #fff4ce;
+  --critical: #c42b1c;
+  --critical-bg: #fde7e9;
+  --link-direct: #0f7b0f;
+  --link-direct-bg: #dff6dd;
+  --link-wired: #005fb8;
+  --link-wired-bg: #e6f0fb;
+  --link-wireless: #8a5a00;
+  --link-wireless-bg: #fff4ce;
+  color-scheme: light;
+}
+
+/* Fluent palette, dark. */
+html.dark {
+  --shell: #202020;
+  --layer: #272727;
+  --card: #2d2d2d;
+  --card-hover: #323232;
+  --subtle-hover: #2d2d2d;
+  --subtle-pressed: #292929;
+  --control: #373737;
+  --control-hover: #3c3c3c;
+  --control-stroke: #3f3f3f;
+  --control-stroke-strong: #5a5a5a;
+  --stroke: #383838;
+  --divider: #333333;
+  --fg: #ffffff;
+  --fg-2: #c8c8c8;
+  --fg-3: #a6a6a6;
+  --accent: #60cdff;
+  --accent-hover: #5ab8e6;
+  --accent-text: #60cdff;
+  --on-accent: #000000;
+  --selected: #2e3842;
+  --success: #6ccb5f;
+  --success-bg: #2a3a28;
+  --caution: #f7c948;
+  --caution-bg: #3f3419;
+  --critical: #ff99a4;
+  --critical-bg: #442726;
+  --link-direct: #6ccb5f;
+  --link-direct-bg: #2a3a28;
+  --link-wired: #60cdff;
+  --link-wired-bg: #1f3445;
+  --link-wireless: #f7c948;
+  --link-wireless-bg: #3f3419;
+  color-scheme: dark;
+}
+
 html, body, #root { height: 100%; margin: 0; }
 
-/* Painted before React mounts so switching themes never flashes the wrong
-   background, and so the window chrome behind the app matches. */
-html { background: #fafafa; color-scheme: light; }
-html.dark { background: #0a0a0a; color-scheme: dark; }
+/* Painted before React mounts, so a theme switch never flashes the wrong
+   background behind the window chrome. */
+html { background: var(--shell); color: var(--fg); }
+body {
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Fluent focus: a two-tone ring that reads on any surface. */
+:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* Fluent's indeterminate progress: a segment sliding across the track. */
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+@layer utilities {
+  .animate-indeterminate { animation: indeterminate 1.4s ease-in-out infinite; }
+}

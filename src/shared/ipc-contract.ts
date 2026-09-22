@@ -41,6 +41,8 @@ export interface MainCommands {
   /** Drives Electron's nativeTheme so menus, dialogs and scrollbars match. */
   setTheme(theme: Settings['theme']): Promise<void>;
   setMinimizeToTray(enabled: boolean): Promise<void>;
+  /** Opens the configured download folder in the OS file manager. */
+  openDownloadFolder(): Promise<void>;
 }
 
 /** Events core -> renderer. */

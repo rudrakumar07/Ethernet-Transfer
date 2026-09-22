@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../api/bridge';
+import { pushSample, type ThroughputSample } from '../lib/throughput';
 import type {
   Device, IncomingOffer, Settings, StatsSnapshot, StatsTick, TransferSnapshot, CoreStatus,
 } from '../../shared/types';
@@ -12,12 +13,12 @@ interface AppState {
   statsTick: StatsTick | null;
   coreStatus: CoreStatus;
   selectedDeviceId: string | null;
-  rightPanelMode: 'network' | 'device';
+  /** Rolling live throughput, one sample per core stats tick, for Home's sparkline. */
+  throughput: ThroughputSample[];
   /** Last send failure, shown to the user; sends used to fail silently. */
   sendError: string | null;
 
   selectDevice: (id: string | null) => void;
-  setRightPanelMode: (mode: 'network' | 'device') => void;
   init: () => Promise<void>;
   refresh: () => Promise<void>;
   sendFiles: (deviceId: string, paths: string[]) => Promise<void>;
@@ -35,11 +36,10 @@ export const useStore = create<AppState>((set, get) => ({
   statsTick: null,
   coreStatus: { connected: false, reconnecting: false },
   selectedDeviceId: null,
-  rightPanelMode: 'network',
+  throughput: [],
   sendError: null,
 
-  selectDevice: (id) => set({ selectedDeviceId: id, rightPanelMode: id ? 'device' : 'network' }),
-  setRightPanelMode: (mode) => set({ rightPanelMode: mode }),
+  selectDevice: (id) => set({ selectedDeviceId: id }),
   clearSendError: () => set({ sendError: null }),
 
   async refresh() {
@@ -89,7 +89,12 @@ export const useStore = create<AppState>((set, get) => ({
     api.onEvent('offer:closed', ({ offerId }) =>
       set((s) => ({ offers: s.offers.filter((o) => o.offerId !== offerId) })),
     );
-    api.onEvent('stats:tick', (tick) => set({ statsTick: tick }));
+    api.onEvent('stats:tick', (tick) =>
+      set((s) => ({
+        statsTick: tick,
+        throughput: pushSample(s.throughput, { sent: tick.speedSentBps, received: tick.speedReceivedBps }),
+      })),
+    );
     api.onEvent('core:status', (status) => {
       const wasConnected = get().coreStatus.connected;
       set({ coreStatus: status });

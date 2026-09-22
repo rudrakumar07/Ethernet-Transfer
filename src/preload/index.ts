@@ -20,6 +20,7 @@ const main = {
   setStartOnLogin: (enabled: boolean) => ipcRenderer.invoke('main:setStartOnLogin', enabled),
   setTheme: (theme: string) => ipcRenderer.invoke('main:setTheme', theme),
   setMinimizeToTray: (enabled: boolean) => ipcRenderer.invoke('main:setMinimizeToTray', enabled),
+  openDownloadFolder: () => ipcRenderer.invoke('main:openDownloadFolder'),
 };
 
 function onEvent(name: CoreEventName, listener: (payload: unknown) => void): () => void {
