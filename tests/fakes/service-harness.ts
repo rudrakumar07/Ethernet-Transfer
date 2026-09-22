@@ -89,6 +89,7 @@ export function createHarness(
       listDevices: () => [testDevice],
       getDevice: (id) => (id === testDevice.id ? testDevice : undefined),
       markSeen: (id) => markedSeen.push(id),
+      refreshTrust: () => {},
       start: async () => {},
       stop: async () => {},
     },

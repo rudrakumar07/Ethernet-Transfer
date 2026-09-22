@@ -4,4 +4,9 @@ import type { Sighting } from '../logic/device-merge';
 export interface DiscoverySource {
   start(onSighting: (s: Sighting) => void): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * This device's name changed. Sources that announce periodically (beacons)
+   * pick it up on their own; one that announces once must re-announce.
+   */
+  refresh?(): Promise<void>;
 }

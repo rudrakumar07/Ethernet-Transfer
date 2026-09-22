@@ -51,7 +51,7 @@ export async function createIdentityService(deps: IdentityDeps): Promise<Identit
   }
 
   const snapshot = stored;
-  let identity: Identity = {
+  const identity: Identity = {
     deviceId: snapshot.deviceId,
     name: settings.get().deviceName,
     os: platform.osName(),
@@ -61,14 +61,18 @@ export async function createIdentityService(deps: IdentityDeps): Promise<Identit
     shortId: toShortId(snapshot.fingerprint),
   };
 
+  // Discovery and the transfer service are handed this object once, at
+  // startup, and read identity.name each time they announce or handshake. A
+  // rename therefore has to change THIS object; replacing it with a copy (as
+  // this used to) left every beacon and HELLO on the old name until restart.
   settings.events.on('changed', (s) => {
-    identity = { ...identity, name: s.deviceName };
+    identity.name = s.deviceName;
   });
 
   return {
     get: () => identity,
     refreshName: () => {
-      identity = { ...identity, name: settings.get().deviceName };
+      identity.name = settings.get().deviceName;
     },
   };
 }

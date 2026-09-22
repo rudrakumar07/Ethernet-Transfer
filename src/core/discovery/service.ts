@@ -29,6 +29,13 @@ export interface DiscoveryService {
    * without this a busy link could drop the very peer it is talking to.
    */
   markSeen(id: DeviceId): void;
+  /**
+   * Re-reads each device's trust from the trust store and announces any that
+   * changed. `trusted` was otherwise only stamped on when a beacon arrived, so
+   * after trusting or untrusting a device the switch showing it stayed wrong
+   * for up to two seconds.
+   */
+  refreshTrust(): void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -77,6 +84,15 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
       if (device) device.lastSeen = clock.now();
     },
 
+    refreshTrust() {
+      for (const device of devices.values()) {
+        const trusted = trust.isTrusted(device.fingerprint);
+        if (trusted === device.trusted) continue;
+        device.trusted = trusted;
+        events.emit('deviceUpdated', device);
+      }
+    },
+
     async start() {
       latencyProbe = startLatencyProbe(
         { udp: deps.udp, clock, identity, logger, onLatency: (deviceId, ms) => {
@@ -119,6 +135,15 @@ export function createDiscoveryService(deps: DiscoveryDeps): DiscoveryService {
           logger.warn('discovery source failed to start', { err: String(err) });
         }
       }
+
+      let announcedName = settings.get().deviceName;
+      settings.events.on('changed', (s) => {
+        if (s.deviceName === announcedName) return;
+        announcedName = s.deviceName;
+        for (const source of sources) {
+          void source.refresh?.().catch((err) => logger.warn('re-announce failed', { err: String(err) }));
+        }
+      });
 
       presenceTimer = clock.setInterval(() => {
         const now = clock.now();

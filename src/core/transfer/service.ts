@@ -629,6 +629,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
           deviceId: pending.offer.deviceId,
           name: pending.offer.deviceName,
         });
+        discovery.refreshTrust();
       }
       pending.resolve({ accept, offsets: {} });
       events.emit('offerClosed', { offerId });

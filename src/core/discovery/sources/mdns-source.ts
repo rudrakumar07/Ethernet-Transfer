@@ -14,19 +14,29 @@ export interface MdnsSourceDeps {
 export function createMdnsSource(deps: MdnsSourceDeps): DiscoverySource {
   const { mdns, interfaces, identity, transferPort } = deps;
 
-  return {
-    async start(onSighting) {
-      mdns.advertise({
+  function advertise() {
+    mdns.advertise({
+      name: identity.name,
+      port: transferPort(),
+      txt: {
+        id: identity.deviceId,
         name: identity.name,
-        port: transferPort(),
-        txt: {
-          id: identity.deviceId,
-          name: identity.name,
-          os: identity.os,
-          fp: identity.fingerprint,
-          ver: '1',
-        },
-      });
+        os: identity.os,
+        fp: identity.fingerprint,
+        ver: '1',
+      },
+    });
+  }
+
+  return {
+    async refresh() {
+      // A stale TXT record would keep answering queries with the old name,
+      // so peers would flicker between it and the beacons' new one.
+      advertise();
+    },
+
+    async start(onSighting) {
+      advertise();
 
       const ifaces = await interfaces.list();
       mdns.browse((txt, address, port) => {

@@ -57,6 +57,7 @@ export function createCoreApi(deps: CoreApiDeps): CoreCommands {
       if (!device) return;
       if (trusted) await trust.trust({ fingerprint: device.fingerprint, deviceId, name: device.name });
       else await trust.untrust(device.fingerprint);
+      discovery.refreshTrust();
     },
     async getSettings() {
       return settings.get();

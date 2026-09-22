@@ -10,6 +10,9 @@ export function createNodeMdnsProvider(): MdnsProvider {
 
   return {
     advertise({ name, port, txt }) {
+      // Re-advertising (after a rename) replaces the old record instead of
+      // leaving both answering queries.
+      published?.stop();
       published = bonjour.publish({ name, type: SERVICE_TYPE, port, txt });
     },
 

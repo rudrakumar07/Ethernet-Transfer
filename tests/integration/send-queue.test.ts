@@ -65,6 +65,7 @@ describe('outbound send queue', () => {
         listDevices: () => [device],
         getDevice: (id) => (id === device.id ? device : undefined),
         markSeen: () => {},
+        refreshTrust: () => {},
         start: async () => {},
         stop: async () => {},
       },
