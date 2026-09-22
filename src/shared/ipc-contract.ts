@@ -47,6 +47,7 @@ export interface MainCommands {
 export interface CoreEvents {
   'devices:changed': Device[];
   'transfer:updated': TransferSnapshot;
+  'transfer:removed': { id: TransferId };
   'offer:incoming': IncomingOffer;
   'offer:closed': { offerId: string };
   'stats:tick': StatsTick;

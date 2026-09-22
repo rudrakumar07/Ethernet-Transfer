@@ -40,7 +40,7 @@ app.whenReady().then(() => {
   ipcMain.handle('main:setMinimizeToTray', (_e, enabled: boolean) => mainCommands.setMinimizeToTray(enabled));
 
   const forwardedEvents: CoreEventName[] = [
-    'devices:changed', 'transfer:updated', 'offer:incoming', 'offer:closed', 'stats:tick', 'core:status',
+    'devices:changed', 'transfer:updated', 'transfer:removed', 'offer:incoming', 'offer:closed', 'stats:tick', 'core:status',
   ];
   for (const name of forwardedEvents) {
     core.on(name, (payload) => {

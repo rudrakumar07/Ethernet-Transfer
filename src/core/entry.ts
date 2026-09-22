@@ -51,6 +51,7 @@ parentPort.once('message', async (e) => {
   const eventNames = [
     'devices:changed',
     'transfer:updated',
+    'transfer:removed',
     'offer:incoming',
     'offer:closed',
     'stats:tick',

@@ -28,6 +28,8 @@ import { MAX_ITEMS_PER_TRANSFER } from './build-file-list';
 
 export interface TransferEvents {
   updated: TransferSnapshot;
+  /** A transfer was dropped from the list; the UI removes its row. */
+  removed: { id: TransferId };
   offerIncoming: IncomingOffer;
   offerClosed: { offerId: string };
 }
@@ -701,6 +703,11 @@ export function createTransferService(deps: TransferDeps): TransferService {
       t?.control?.requestCancel();
       cancelPendingEmit(id);
       transfers.delete(id);
+      // Announced even when the id was already gone, so a row the renderer is
+      // still showing can always be cleared. Without this event the core
+      // forgot the transfer but the row stayed on screen, and Dismiss
+      // appeared to do nothing.
+      events.emit('removed', { id });
     },
 
     list: () => Array.from(transfers.values()).map((t) => t.snapshot),

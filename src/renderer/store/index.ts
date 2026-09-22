@@ -82,6 +82,9 @@ export const useStore = create<AppState>((set, get) => ({
         return { transfers };
       }),
     );
+    api.onEvent('transfer:removed', ({ id }) =>
+      set((s) => ({ transfers: s.transfers.filter((t) => t.id !== id) })),
+    );
     api.onEvent('offer:incoming', (offer) => set((s) => ({ offers: [...s.offers, offer] })));
     api.onEvent('offer:closed', ({ offerId }) =>
       set((s) => ({ offers: s.offers.filter((o) => o.offerId !== offerId) })),

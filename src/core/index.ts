@@ -82,6 +82,7 @@ export async function createCore(dataDir: string, appVersion: string): Promise<C
   discovery.events.on('deviceUpdated', () => emit('devices:changed', discovery.listDevices()));
   discovery.events.on('deviceDown', () => emit('devices:changed', discovery.listDevices()));
   transfer.events.on('updated', (t) => emit('transfer:updated', t));
+  transfer.events.on('removed', (r) => emit('transfer:removed', r));
   transfer.events.on('offerIncoming', (o) => emit('offer:incoming', o));
   transfer.events.on('offerClosed', (o) => emit('offer:closed', o));
 
