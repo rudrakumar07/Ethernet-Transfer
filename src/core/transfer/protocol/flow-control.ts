@@ -12,12 +12,15 @@ import type { Duplex } from 'node:stream';
  * as the transfer stopping and the device disappearing.
  */
 export async function writeWithBackpressure(socket: Duplex, frame: Buffer): Promise<void> {
+  // A write to a closed socket returns false and 'drain' never follows, so
+  // waiting for it would hang the sender forever on a dropped connection.
+  if (socket.destroyed || socket.writableEnded) throw new Error('connection-closed');
   if (socket.write(frame)) return;
   await once(socket, 'drain');
 }
 
 function once(socket: Duplex, event: 'drain'): Promise<void> {
-  return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       socket.removeListener(event, onEvent);
       socket.removeListener('close', onEnd);
@@ -28,10 +31,10 @@ function once(socket: Duplex, event: 'drain'): Promise<void> {
       resolve();
     };
     // A socket that closes or errors while we wait must not leave the sender
-    // hanging forever; the next write/read reports the real failure.
+    // hanging forever.
     const onEnd = () => {
       cleanup();
-      resolve();
+      reject(new Error('connection-closed'));
     };
     socket.once(event, onEvent);
     socket.once('close', onEnd);

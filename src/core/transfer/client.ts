@@ -3,6 +3,7 @@ import type { TlsConnection, TlsTransport } from '../ports';
 import type { Identity } from '../identity';
 import { compareAddressPriority } from '../discovery';
 import { FrameType, PROTOCOL_VERSION, encodeControlFrame } from '../../shared/protocol';
+import { endGracefully } from './protocol/flow-control';
 
 const CONNECT_TIMEOUT_MS = 2000;
 
@@ -56,6 +57,8 @@ export async function sendResumeRequest(
     );
     conn.socket.write(encodeControlFrame(FrameType.RESUME_REQUEST, { transferId }));
   } finally {
-    conn.close();
+    // Destroying straight after the writes could drop them from the send
+    // buffer, so Resume on an incoming transfer silently did nothing.
+    await endGracefully(conn.socket as never, () => conn.close());
   }
 }

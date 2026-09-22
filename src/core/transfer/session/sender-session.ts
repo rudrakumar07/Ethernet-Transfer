@@ -9,6 +9,7 @@ import {
   type Hello,
 } from '../../../shared/protocol';
 import { frameStream } from '../protocol/frame-stream';
+import type { DecodedFrame } from '../protocol/framing';
 import { decodeControlPayload } from '../protocol/codec';
 import { writeWithBackpressure } from '../protocol/flow-control';
 import type { FileSystem, Logger } from '../../ports';
@@ -19,6 +20,20 @@ export interface SourceFile {
   item: TransferItem;
   absolutePath: string;
 }
+
+/**
+ * How a sender session ended. The service maps each to a transfer status -
+ * before this, every exit returned nothing, so a dropped connection or a
+ * pause from the receiver left the transfer showing "active" forever.
+ */
+export type SenderOutcome =
+  | 'finished'
+  | 'aborted'
+  | 'declined'
+  | 'incompatible'
+  | 'peer-paused'
+  | 'peer-cancelled'
+  | 'connection-lost';
 
 export interface SenderSessionDeps {
   fs: FileSystem;
@@ -42,8 +57,7 @@ export interface SenderSessionDeps {
   onIncompatibleVersion?: (peerAppVersion: string) => void;
 }
 
-/** Drives one outgoing TLS connection through OFFER, FILE frames and DONE (spec §5.3, §5.6-§5.7). */
-export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps): Promise<void> {
+export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps): Promise<SenderOutcome> {
   const {
     fs,
     logger,
@@ -79,37 +93,72 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
 
   const stream = frameStream(socket)[Symbol.asyncIterator]();
 
-  async function nextFrame() {
-    const { value, done } = await stream.next();
-    if (done) throw new Error('connection-closed');
-    return value;
+  /**
+   * One read from the peer, kept outstanding. The receiver speaks mid-file
+   * only to say PAUSE or CANCEL (or by hanging up), so holding a read open
+   * while streaming lets the sender notice at once - it used to read only
+   * after each file, and learned nothing until then.
+   */
+  interface PendingRead {
+    settled: boolean;
+    frame: DecodedFrame | null; // null: the connection ended
+    promise: Promise<DecodedFrame | null>;
+  }
+  function read(): PendingRead {
+    const r: PendingRead = { settled: false, frame: null, promise: Promise.resolve(null) };
+    r.promise = stream.next().then(
+      ({ value, done }) => {
+        r.settled = true;
+        r.frame = done ? null : value;
+        return r.frame;
+      },
+      () => {
+        r.settled = true;
+        r.frame = null;
+        return null;
+      },
+    );
+    return r;
+  }
+
+  /**
+   * What an unsolicited frame (or silence) from the receiver means for the
+   * session. Every such exit also hangs up: the receiver waits for the close
+   * to finish its side, and a sender that simply stopped left it waiting.
+   */
+  function interpret(frame: DecodedFrame | null): SenderOutcome {
+    try {
+      socket.end();
+    } catch {
+      // already closed
+    }
+    if (control?.isAborted()) return 'aborted';
+    if (frame?.type === FrameType.PAUSE) return 'peer-paused';
+    if (frame?.type === FrameType.CANCEL) return 'peer-cancelled';
+    return 'connection-lost';
   }
 
   // HELLO handshake (spec §5.2-§5.3): both sides identify themselves and
   // check protocol compatibility before anything else crosses the wire.
   send(FrameType.HELLO, { ...hello, protocolVersion: PROTOCOL_VERSION });
-  let helloReply;
-  try {
-    helloReply = await nextFrame();
-  } catch {
-    return; // aborted, or the peer vanished before replying at all
-  }
+  const helloReply = await read().promise;
+  if (!helloReply) return interpret(null); // aborted, or the peer vanished first
   if (helloReply.type === FrameType.ERROR) {
     const err = decodeControlPayload<{ code: string; message: string }>(helloReply.type, helloReply.payload);
     if (err.code === 'incompatible-version') onIncompatibleVersion?.(err.message);
     socket.end();
-    return;
+    return 'incompatible';
   }
   if (helloReply.type !== FrameType.HELLO) {
     socket.destroy();
-    return;
+    return 'connection-lost';
   }
   const peerHello = decodeControlPayload<Hello>(helloReply.type, helloReply.payload);
   if (Math.trunc(peerHello.protocolVersion) !== Math.trunc(PROTOCOL_VERSION)) {
     send(FrameType.ERROR, { code: 'incompatible-version', message: peerHello.appVersion });
     onIncompatibleVersion?.(peerHello.appVersion);
     socket.end();
-    return;
+    return 'incompatible';
   }
 
   const totalBytes = items.reduce((sum, i) => sum + i.size, 0);
@@ -124,12 +173,8 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
     });
   }
 
-  let first;
-  try {
-    first = await nextFrame();
-  } catch {
-    return; // aborted (or peer vanished) before it ever replied to the offer
-  }
+  const first = await read().promise;
+  if (!first) return interpret(null);
   let offsets: Record<string, number> = {};
   if (first.type === FrameType.ACCEPT) {
     offsets = decodeControlPayload<{ offsets: Record<string, number> }>(first.type, first.payload).offsets;
@@ -137,14 +182,17 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
     const declined = decodeControlPayload<{ reason: string }>(first.type, first.payload);
     onDeclined?.(declined.reason);
     socket.end();
-    return;
+    return 'declined';
   } else {
     socket.destroy();
-    return;
+    return interpret(first);
   }
 
+  let pending = read();
+
   for (const item of items.filter((i) => i.kind === 'file')) {
-    if (control?.isAborted()) break;
+    if (control?.isAborted()) return 'aborted';
+    if (pending.settled) return interpret(pending.frame);
     if (alreadyVerified?.has(item.index)) continue;
     const source = sourceOf(item.index);
     if (!source) {
@@ -174,67 +222,80 @@ export async function runSenderSession(socket: Duplex, deps: SenderSessionDeps):
         size: changed ? stat.size : undefined,
         mtimeMs: changed ? stat.mtimeMs : undefined,
       });
-
       onFileOffset?.(item.index, offset);
+
       const hash = createHash('sha256');
       if (offset > 0) {
+        // Rebuild the hash over exactly the bytes the receiver already has.
+        // This used to take min(chunk, offset) from every chunk without ever
+        // counting down, and stop only when one chunk covered the whole offset
+        // - so with real 64 KiB reads it hashed the entire file, the receiver
+        // rejected the result, and every resume restarted from zero.
+        let remaining = offset;
         for await (const chunk of fs.openRead(source.absolutePath, { start: 0 })) {
-          hash.update(chunk.subarray(0, Math.min(chunk.length, offset)));
-          if (chunk.length >= offset) break;
+          if (control?.isAborted()) return 'aborted';
+          if (pending.settled) return interpret(pending.frame);
+          const take = Math.min(chunk.length, remaining);
+          hash.update(chunk.subarray(0, take));
+          remaining -= take;
+          if (remaining <= 0) break;
         }
       }
 
-      let aborted = false;
-      for await (const chunk of fs.openRead(source.absolutePath, { start: offset })) {
-        if (control?.isAborted()) {
-          aborted = true;
-          break;
-        }
-        // Frames are split to stay inside the protocol's payload ceiling; the
-        // filesystem adapter's chunk size is a hint, not a guarantee.
-        for (let start = 0; start < chunk.byteLength; start += CHUNK_SIZE) {
-          const slice = chunk.subarray(start, Math.min(start + CHUNK_SIZE, chunk.byteLength));
-          hash.update(slice);
-          // Waiting for drain is what keeps the socket's write buffer bounded
-          // and makes reported progress track bytes that actually left.
-          await writeWithBackpressure(socket, encodeDataFrame(slice));
-          if (control?.isAborted()) {
-            aborted = true;
-            break;
+      try {
+        for await (const chunk of fs.openRead(source.absolutePath, { start: offset })) {
+          // Frames are split to stay inside the protocol's payload ceiling; the
+          // filesystem adapter's chunk size is a hint, not a guarantee.
+          for (let start = 0; start < chunk.byteLength; start += CHUNK_SIZE) {
+            if (control?.isAborted()) return 'aborted';
+            if (pending.settled) return interpret(pending.frame);
+            const slice = chunk.subarray(start, Math.min(start + CHUNK_SIZE, chunk.byteLength));
+            hash.update(slice);
+            // Waiting for drain is what keeps the socket's write buffer bounded
+            // and makes reported progress track bytes that actually left. The
+            // wait races the outstanding read: on a busy link a full buffer
+            // can take seconds to drain, and a PAUSE or CANCEL from the
+            // receiver must not queue up behind it.
+            const written = writeWithBackpressure(socket, encodeDataFrame(slice)).then(() => 'written' as const);
+            written.catch(() => undefined); // abandoned below if the peer speaks first
+            const winner = await Promise.race([written, pending.promise.then(() => 'peer' as const)]);
+            if (winner === 'peer') return interpret(pending.frame);
+            onProgress(item.index, slice.byteLength);
           }
-          onProgress(item.index, slice.byteLength);
         }
-        if (aborted) break;
+      } catch (err) {
+        // The socket closed under us. Let the outstanding read say why - a
+        // PAUSE or CANCEL may have arrived just before the close.
+        if (control?.isAborted()) return 'aborted';
+        const why = await pending.promise;
+        logger.debug('send interrupted', { err: String(err) });
+        return interpret(why);
       }
-      if (aborted) break;
 
       send(FrameType.FILE_END, { index: item.index, sha256: hash.digest('hex') });
-      let reply;
-      try {
-        reply = await nextFrame();
-      } catch {
-        // Connection ended - either the peer went away, or our own abort
-        // handler closed it. Either way there is nothing further to send.
-        break;
-      }
-      if (reply.type === FrameType.FILE_OK) {
+      const reply = await pending.promise;
+      pending = read();
+      if (reply?.type === FrameType.FILE_OK) {
         done = true;
         onFileDone(item.index, true);
-      } else if (reply.type === FrameType.FILE_RETRY) {
+      } else if (reply?.type === FrameType.FILE_RETRY) {
         offset = 0;
         logger.warn('hash mismatch, retrying from zero', { index: item.index });
       } else {
-        break;
+        // Anything else - PAUSE, CANCEL, or the connection going away - ends
+        // the session. It is not a verdict on this file, which the old code
+        // recorded as a hash mismatch before carrying on to the next one.
+        return interpret(reply);
       }
     }
-    if (!done && !control?.isAborted()) {
+    if (!done) {
       send(FrameType.FILE_FAILED, { index: item.index, reason: 'hash-mismatch' });
       onFileDone(item.index, false, 'hash-mismatch');
     }
   }
 
-  if (!control?.isAborted()) {
-    send(FrameType.DONE, {});
-    socket.end();
-  }
+  if (control?.isAborted()) return 'aborted';
+  send(FrameType.DONE, {});
+  socket.end();
+  return 'finished';
 }

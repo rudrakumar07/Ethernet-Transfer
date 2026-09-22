@@ -31,8 +31,14 @@ export class FakeSocket extends EventEmitter {
   /** High-water mark actually reached during this socket's lifetime. */
   peakWritableLength = 0;
 
+  /** Set once the peer closes: writes after that fail, like a real socket's. */
+  private peerClosed = false;
+
   constructor(options: FakeSocketOptions = {}) {
     super();
+    this.on('close', () => {
+      this.peerClosed = true;
+    });
     this.highWaterMark = options.highWaterMark ?? Number.POSITIVE_INFINITY;
     this.manualFlush = options.manualFlush ?? false;
   }
@@ -41,8 +47,16 @@ export class FakeSocket extends EventEmitter {
     this.peerRef = peer;
   }
 
+  get destroyed(): boolean {
+    return this.ended || this.peerClosed;
+  }
+
+  get writableEnded(): boolean {
+    return this.ended;
+  }
+
   write(chunk: Buffer): boolean {
-    if (this.ended) return false;
+    if (this.destroyed) return false;
     this.writableLength += chunk.length;
     if (this.writableLength > this.peakWritableLength) this.peakWritableLength = this.writableLength;
 

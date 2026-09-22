@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { api } from '../../api/bridge';
 import {
@@ -33,6 +33,10 @@ export function SettingsScreen() {
   // re-announce this device over the network) on every single keystroke.
   const [nameDraft, setNameDraft] = useState(settings?.deviceName ?? '');
   const [copied, setCopied] = useState(false);
+  // Escape reverts and then blurs; the blur that follows must not save. Reading
+  // the draft there saved the abandoned edit instead, because the revert had
+  // not re-rendered yet.
+  const cancelEdit = useRef(false);
 
   useEffect(() => {
     if (settings) setNameDraft(settings.deviceName);
@@ -40,8 +44,13 @@ export function SettingsScreen() {
 
   if (!settings) return null;
 
-  const commitName = () => {
-    const next = nameDraft.trim();
+  const commitName = (value: string) => {
+    if (cancelEdit.current) {
+      cancelEdit.current = false;
+      setNameDraft(settings.deviceName);
+      return;
+    }
+    const next = value.trim();
     if (!next || next === settings.deviceName) {
       setNameDraft(settings.deviceName);
       return;
@@ -64,11 +73,11 @@ export function SettingsScreen() {
                 aria-label="Device name"
                 value={nameDraft}
                 onChange={(e) => setNameDraft(e.target.value)}
-                onBlur={commitName}
+                onBlur={(e) => commitName(e.currentTarget.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') e.currentTarget.blur();
                   if (e.key === 'Escape') {
-                    setNameDraft(settings.deviceName);
+                    cancelEdit.current = true;
                     e.currentTarget.blur();
                   }
                 }}

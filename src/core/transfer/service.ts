@@ -239,6 +239,16 @@ export function createTransferService(deps: TransferDeps): TransferService {
     return true;
   }
 
+  /**
+   * Only a paused or interrupted transfer can be resumed. Resuming without
+   * this check let a double-click start two sessions writing into the same
+   * .etpart, and let a late resume request from the receiver revive a send
+   * that had already been cancelled or had finished.
+   */
+  function isResumable(t: InternalTransfer): boolean {
+    return t.snapshot.status === 'paused' || t.snapshot.status === 'interrupted';
+  }
+
   function activeCount(direction: 'send' | 'receive'): number {
     let n = 0;
     for (const t of transfers.values()) {
@@ -289,7 +299,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
         // sending. We are the original sender; look up our outbound record.
         const t = transfers.get(transferId);
         const outboundDevice = t ? discovery.getDevice(t.snapshot.deviceId) : undefined;
-        if (t && outboundDevice && t.snapshot.direction === 'send') {
+        if (t && outboundDevice && t.snapshot.direction === 'send' && isResumable(t)) {
           void runSend(t, outboundDevice).catch((err) =>
             logger.warn('resume send failed', { err: String(err) }),
           );
@@ -320,7 +330,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
       },
       onResume: async (transferId) => {
         const t = transfers.get(transferId);
-        if (!t || t.snapshot.direction !== 'receive' || !t.destinationRoot) return null;
+        if (!t || t.snapshot.direction !== 'receive' || !t.destinationRoot || !isResumable(t)) return null;
         activeTransferId = transferId;
         t.control = connectionControl;
         setStatus(t, 'active');
@@ -386,14 +396,23 @@ export function createTransferService(deps: TransferDeps): TransferService {
 
         events.emit('offerIncoming', incoming);
 
+        // If the sender cancels or its connection drops while the prompt is
+        // up, close the prompt: otherwise it kept counting down for a minute
+        // and Accept produced a transfer on a connection that no longer existed.
+        let onSenderGone: () => void = () => undefined;
         return new Promise<{ accept: boolean; offsets?: Record<number, number> }>((resolve) => {
-          const timer = setTimeout(() => {
-            pendingOffers.delete(offerId);
+          const close = () => {
+            if (!pendingOffers.delete(offerId)) return;
+            clearTimeout(timer);
             events.emit('offerClosed', { offerId });
             resolve({ accept: false });
-          }, OFFER_TIMEOUT_MS);
+          };
+          const timer = setTimeout(close, OFFER_TIMEOUT_MS);
+          onSenderGone = close;
+          conn.socket.once('close', onSenderGone);
           pendingOffers.set(offerId, { offer: incoming, resolve, timer, fingerprint });
         }).then((r) => {
+          conn.socket.removeListener('close', onSenderGone);
           if (r.accept) setStatus(transfers.get(transferId)!, 'active');
           else transfers.delete(transferId);
           return r;
@@ -456,6 +475,9 @@ export function createTransferService(deps: TransferDeps): TransferService {
         size,
         mtimeMs,
       }));
+      // Cancelled while the walk was running: leave it cancelled. Setting it to
+      // queued here used to revive it, and the send went out anyway.
+      if (t.snapshot.status !== 'scanning') return;
       const files = items.filter((i) => i.kind === 'file');
       t.items = items;
       t.sources = built.sources;
@@ -464,6 +486,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
       t.snapshot.files = files.map((item) => ({ item, status: 'queued', bytesDone: 0 }));
       setStatus(t, 'queued');
     } catch (err) {
+      if (t.snapshot.status !== 'scanning') return;
       const reason = err instanceof Error ? err.message : String(err);
       t.snapshot.error =
         reason === 'too-many-files'
@@ -493,7 +516,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
         return;
       }
 
-      await runSenderSession(conn.socket as never, {
+      const outcome = await runSenderSession(conn.socket as never, {
         fs,
         logger,
         transferId: t.snapshot.id,
@@ -552,10 +575,18 @@ export function createTransferService(deps: TransferDeps): TransferService {
           emitUpdate(t);
         },
       });
-      // A folder with no files inside it completes as soon as the manifest has
-      // been delivered; there are no files to mark verified.
-      if (t.snapshot.files.length === 0 && !control.isAborted() && t.snapshot.status === 'active') {
-        setStatus(t, 'completed');
+      // How the session ended decides the status. Every exit used to return
+      // nothing, so a dropped link or a pause from the receiver left the
+      // transfer "active" forever, with no Resume on offer.
+      if (t.snapshot.status === 'active') {
+        if (outcome === 'peer-paused') setStatus(t, 'paused');
+        else if (outcome === 'peer-cancelled') setStatus(t, 'cancelled');
+        else if (outcome === 'connection-lost') setStatus(t, 'interrupted');
+        else if (outcome === 'finished' && t.snapshot.files.length === 0) {
+          // A folder with no files inside it completes as soon as the manifest
+          // has been delivered; there are no files to mark verified.
+          setStatus(t, 'completed');
+        } else if (outcome === 'finished') maybeFinish(t);
       }
       // Not awaited: the send slot is free as soon as the session is done, and
       // the flush only needs to outlive this function, not block the queue.
@@ -647,7 +678,7 @@ export function createTransferService(deps: TransferDeps): TransferService {
     async resume(id) {
       const t = transfers.get(id);
       const device = t ? discovery.getDevice(t.snapshot.deviceId) : undefined;
-      if (!t || !device) return;
+      if (!t || !device || !isResumable(t)) return;
       if (t.snapshot.direction === 'send') {
         void runSend(t, device);
       } else {
