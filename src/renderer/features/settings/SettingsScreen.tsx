@@ -5,6 +5,7 @@ import {
   Button,
   CopyIcon,
   FolderIcon,
+  InfoIcon,
   PageHeader,
   PaletteIcon,
   PowerIcon,
@@ -192,6 +193,14 @@ export function SettingsScreen() {
                 {copied ? 'Copied' : 'Copy'}
               </Button>
             }
+          />
+        </Group>
+
+        <Group title="About">
+          <SettingsCard
+            icon={<InfoIcon size={20} />}
+            title="EtherTransfer"
+            description={`Version ${__APP_VERSION__} · Created by ${__APP_AUTHOR__}`}
           />
         </Group>
       </div>

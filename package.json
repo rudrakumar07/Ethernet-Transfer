@@ -3,6 +3,7 @@
   "productName": "EtherTransfer",
   "version": "0.1.0",
   "description": "Cross-platform LAN/direct-cable file transfer with live network visualization",
+  "author": "RUDRA KUMAR",
   "main": "dist/main/index.js",
   "type": "commonjs",
   "scripts": {

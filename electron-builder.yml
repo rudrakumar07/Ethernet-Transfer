@@ -1,5 +1,6 @@
 appId: com.ethertransfer.app
 productName: EtherTransfer
+copyright: Copyright © 2026 RUDRA KUMAR
 directories:
   output: release
 files:
@@ -32,6 +33,7 @@ mac:
       - _ethertransfer._tcp
 linux:
   icon: build/icon.png
+  maintainer: RUDRA KUMAR
   target:
     - AppImage
     - deb
