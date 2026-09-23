@@ -8,11 +8,13 @@ export function createTray(win: BrowserWindow): Tray {
   tray.setToolTip('EtherTransfer');
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Open EtherTransfer', click: () => win.show() },
+      { label: 'Open EtherTransfer', click: () => { if (!win.isDestroyed()) win.show(); } },
       { type: 'separator' },
       { label: 'Quit', role: 'quit' },
     ]),
   );
-  tray.on('click', () => win.show());
+  tray.on('click', () => {
+    if (!win.isDestroyed()) win.show();
+  });
   return tray;
 }

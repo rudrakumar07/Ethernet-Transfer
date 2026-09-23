@@ -6,6 +6,9 @@ import pkg from './package.json';
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    define: {
+      __APP_AUTHOR__: JSON.stringify(pkg.author),
+    },
     build: {
       outDir: 'dist/main',
       rollupOptions: {

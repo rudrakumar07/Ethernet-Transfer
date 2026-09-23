@@ -127,7 +127,7 @@ export function SettingsScreen() {
           <SettingsCard
             icon={<PaletteIcon size={20} />}
             title="Theme"
-            description="Follow Windows, or always use light or dark"
+            description="Follow your system, or always use light or dark"
             control={
               <Select
                 label="Theme"

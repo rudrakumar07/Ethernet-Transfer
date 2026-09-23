@@ -23,6 +23,17 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
   }
 
+  // The standard About panel (EtherTransfer > About on macOS, Help > About on
+  // Linux). Without this it showed the copyright only in a packaged build and
+  // never the creator.
+  app.setAboutPanelOptions({
+    applicationName: 'EtherTransfer',
+    applicationVersion: app.getVersion(),
+    copyright: `Copyright © 2026 ${__APP_AUTHOR__}`,
+    credits: `Created by ${__APP_AUTHOR__}`,
+    authors: [__APP_AUTHOR__],
+  });
+
   const win = createMainWindow();
   const tray = createTray(win);
   const core = createCoreHost();
@@ -47,13 +58,16 @@ app.whenReady().then(() => {
   ];
   for (const name of forwardedEvents) {
     core.on(name, (payload) => {
-      win.webContents.send(`core-event:${name}`, payload);
+      // The core keeps emitting (a stats tick every 500 ms) after the window is
+      // gone - while quitting on any platform, and on macOS after closing it -
+      // and touching a destroyed window's webContents throws.
+      if (!win.isDestroyed()) win.webContents.send(`core-event:${name}`, payload);
     });
   }
 
   core.on('offer:incoming', (payload) => {
     const offer = payload as { deviceName: string; fileCount: number };
-    if (!win.isFocused()) {
+    if (!win.isDestroyed() && !win.isFocused()) {
       new Notification({
         title: 'EtherTransfer',
         body: `${offer.deviceName} wants to send you ${offer.fileCount} file(s)`,
@@ -74,10 +88,25 @@ app.whenReady().then(() => {
   });
 
   win.on('close', (e) => {
-    if (quitting || process.platform === 'darwin') return;
-    if (!mainCommands.shouldMinimizeToTray()) return;
-    e.preventDefault();
-    win.hide();
+    if (quitting) return;
+    if (mainCommands.shouldMinimizeToTray()) {
+      e.preventDefault();
+      win.hide();
+      return;
+    }
+    // Not keeping it in the tray: closing the window quits. On macOS it used
+    // to be destroyed while the app kept running - Electron does not quit
+    // there when the last window closes - leaving nothing to reopen and a
+    // destroyed window still receiving events.
+    if (process.platform === 'darwin') {
+      e.preventDefault();
+      app.quit();
+    }
+  });
+
+  // Clicking the Dock icon brings the hidden window back (macOS).
+  app.on('activate', () => {
+    if (!win.isDestroyed()) win.show();
   });
 
   void tray;
